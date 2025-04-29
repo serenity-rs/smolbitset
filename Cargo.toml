@@ -1,0 +1,20 @@
+[package]
+name = "smolbitset"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85.0"
+
+[dependencies]
+
+[lints.clippy]
+nursery = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "allow"
+option_if_let_else = "allow"
+module_name_repetitions = "allow"
+cast_possible_truncation = "allow"
+cast_precision_loss = "allow"
+cast_possible_wrap = "allow"
+cast_lossless = "allow"
+cast_sign_loss = "allow"
