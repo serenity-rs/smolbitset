@@ -30,7 +30,7 @@ impl SmolBitSet {
     }
 
     const unsafe fn write_inline_data_unchecked(&mut self, data: usize) {
-        self.ptr = ((data << 1) & 0b1) as *const BitSliceType;
+        self.ptr = ((data << 1) | 0b1) as *const BitSliceType;
     }
 
     fn len(&self) -> BitSliceType {
@@ -55,7 +55,7 @@ impl SmolBitSet {
     }
 
     const unsafe fn as_slice_unchecked(&self) -> &[BitSliceType] {
-        unsafe { slice::from_raw_parts(self.ptr, self.len_unchecked() as usize) }
+        unsafe { slice::from_raw_parts(self.ptr.add(1), self.len_unchecked() as usize) }
     }
 
     fn as_slice_mut(&mut self) -> &mut [BitSliceType] {
@@ -67,7 +67,9 @@ impl SmolBitSet {
     }
 
     const unsafe fn as_slice_mut_unchecked(&mut self) -> &mut [BitSliceType] {
-        unsafe { slice::from_raw_parts_mut(self.ptr.cast_mut(), self.len_unchecked() as usize) }
+        unsafe {
+            slice::from_raw_parts_mut(self.ptr.add(1).cast_mut(), self.len_unchecked() as usize)
+        }
     }
 
     fn spill(&mut self, highest_bit: usize) {
@@ -111,7 +113,7 @@ impl SmolBitSet {
         }
 
         let len = unsafe { self.len_unchecked() } as usize;
-        if highest_bit <= (BST_BITS * len) {
+        if highest_bit < (BST_BITS * len) {
             return;
         }
 
@@ -214,7 +216,7 @@ fn highest_set_bit(data: BitSliceType) -> usize {
 
     for i in (0..BST_BITS).rev() {
         if data & (1 << i) != 0 {
-            return i;
+            return i + 1;
         }
     }
 
@@ -228,7 +230,7 @@ fn highest_set_bit_usize(data: usize) -> usize {
 
     for i in (0..usize::BITS as usize).rev() {
         if data & (1 << i) != 0 {
-            return i;
+            return i + 1;
         }
     }
 
@@ -245,7 +247,11 @@ fn sbs_shl(sbs: &mut SmolBitSet, rhs: usize) {
 
     if sbs.is_inline() {
         unsafe {
-            sbs.write_inline_data_unchecked(sbs.get_inline_data_unchecked() << rhs);
+            sbs.write_inline_data_unchecked(
+                sbs.get_inline_data_unchecked()
+                    .checked_shl(rhs as u32)
+                    .unwrap_or(0),
+            );
         }
     } else {
         let data = unsafe { sbs.as_slice_mut_unchecked() };
@@ -292,9 +298,10 @@ fn sbs_shr(sbs: &mut SmolBitSet, rhs: usize) {
         // shifting further than one slice member?
         let offset = rhs / BST_BITS;
         if offset > 0 {
-            for i in 0..data.len() {
-                data[i] = if let Some(src_idx) = i.checked_add(offset) {
-                    data[src_idx]
+            let len = data.len();
+            for i in 0..len {
+                data[i] = if (i + offset) < len {
+                    data[i + offset]
                 } else {
                     0
                 };
@@ -379,7 +386,7 @@ macro_rules! impl_shifts {
 
 impl_shifts!(u8, u16, u32, u64, usize);
 
-macro_rules! impl_binop {
+macro_rules! impl_bitop {
     ($($OP:ident :: $op:ident, $OPA:ident :: $opa:ident),+) => {$(
         impl $OP<Self> for SmolBitSet {
             type Output = Self;
@@ -397,7 +404,7 @@ macro_rules! impl_binop {
             }
         }
 
-        impl_binop!(@ref $OP :: $op, $OPA :: $opa);
+        impl_bitop!(@ref $OP :: $op, $OPA :: $opa);
     )*};
     (@ref $OP:ident :: $op:ident, $OPA:ident :: $opa:ident) => {
         impl $OP<&Self> for SmolBitSet {
@@ -450,11 +457,57 @@ macro_rules! impl_binop {
     };
 }
 
-impl_binop! {
+impl_bitop! {
     BitOr::bitor, BitOrAssign::bitor_assign,
     BitAnd::bitand, BitAndAssign::bitand_assign,
     BitXor::bitxor, BitXorAssign::bitxor_assign
 }
+
+macro_rules! impl_binop_prim {
+    ($($OP:ident :: $op:ident, $OPA:ident :: $opa:ident, $t:ty),+) => {$(
+        impl $OP<$t> for SmolBitSet {
+            type Output = Self;
+
+            fn $op(self, rhs: $t) -> Self {
+                let mut lhs = self;
+                lhs.$opa(rhs);
+                lhs
+            }
+        }
+
+        impl $OPA<$t> for SmolBitSet {
+            fn $opa(&mut self, rhs: $t) {
+                self.$opa(Self::from(rhs))
+            }
+        }
+
+        impl_binop_prim!(@ref $OP :: $op, $OPA :: $opa, $t);
+    )*};
+    (@ref $OP:ident :: $op:ident, $OPA:ident :: $opa:ident, $t:ty) => {
+        impl $OP<&$t> for SmolBitSet {
+            type Output = Self;
+
+            fn $op(self, rhs: &$t) -> Self {
+                self.$op(*rhs)
+            }
+        }
+
+        impl $OPA<&$t> for SmolBitSet {
+            fn $opa(&mut self, rhs: &$t) {
+                self.$opa(*rhs)
+            }
+        }
+    };
+    ($($t:ty),+) => {$(
+        impl_binop_prim!{
+            BitOr::bitor, BitOrAssign::bitor_assign, $t,
+            BitAnd::bitand, BitAndAssign::bitand_assign, $t,
+            BitXor::bitxor, BitXorAssign::bitxor_assign, $t
+        }
+    )*};
+}
+
+impl_binop_prim!(u8, u16, u32, u64, usize);
 
 macro_rules! impl_from {
     ($($t:ty),+) => {$(
@@ -496,10 +549,414 @@ mod tests {
     use super::*;
 
     #[test]
-    fn addr_sanity_check() {
-        for i in 0..usize::BITS {
-            let t: *const BitSliceType = (1usize << i) as _;
-            assert_eq!(t as usize, t.addr());
+    fn check_highest_set_bit() {
+        let t = 0;
+        assert_eq!(highest_set_bit_usize(t), 0);
+
+        let t = 1;
+        assert_eq!(highest_set_bit_usize(t), 1);
+
+        let t = 1 << 3;
+        assert_eq!(highest_set_bit_usize(t), 4);
+
+        let t = 1 << 31;
+        assert_eq!(highest_set_bit_usize(t), 32);
+
+        let t = 0b10101;
+        assert_eq!(highest_set_bit_usize(t), 5);
+
+        let t = 1 << 22;
+        assert_eq!(highest_set_bit(t), 23);
+
+        let t = u64::MAX;
+        assert_eq!(highest_set_bit_usize(t as usize), 64);
+    }
+
+    #[test]
+    fn ensure_capacity() {
+        let mut t = SmolBitSet::new();
+        assert!(t.is_inline());
+
+        t.ensure_capacity(0);
+        assert!(t.is_inline());
+
+        t.ensure_capacity(32);
+        assert!(t.is_inline());
+
+        t.ensure_capacity(63);
+        assert!(t.is_inline());
+
+        t.ensure_capacity(64);
+        assert!(!t.is_inline());
+        assert_eq!(t.len(), 2);
+
+        t.ensure_capacity(65);
+        assert!(!t.is_inline());
+        assert_eq!(t.len(), 3);
+    }
+
+    #[test]
+    fn set_get_inline() {
+        let mut sbs = SmolBitSet::new();
+        assert!(sbs.is_inline());
+
+        unsafe {
+            let d = sbs.get_inline_data_unchecked();
+            assert_eq!(d, 0);
+
+            sbs.write_inline_data_unchecked(0b1010);
+            assert!(sbs.is_inline());
+
+            let d = sbs.get_inline_data_unchecked();
+            assert_eq!(d, 0b1010);
+        }
+    }
+
+    #[test]
+    fn set_get_slice() {
+        let a = SmolBitSet::from(0xC5C5_BEEF_0000_1234u64);
+        assert!(!a.is_inline());
+        assert_eq!(a.len(), 2);
+
+        let d1 = a.as_slice();
+        assert_eq!(d1.len(), 2);
+        assert_eq!(d1, [0x_0000_1234, 0xC5C5_BEEF]);
+
+        let mut b = a.clone();
+        let d2 = b.as_slice_mut();
+        assert_eq!(d2.len(), 2);
+        assert_eq!(d2, d1);
+
+        d2[0] = 0xDEAD_BEEF;
+        d2[1] = 0xC0FF_EE00;
+
+        let d3 = b.as_slice();
+        assert_eq!(d3.len(), 2);
+        assert_eq!(d3, [0xDEAD_BEEF, 0xC0FF_EE00]);
+    }
+
+    #[test]
+    fn spill() {
+        let mut sbs = SmolBitSet::new();
+        assert!(sbs.is_inline());
+
+        sbs.spill(30);
+        assert!(!sbs.is_inline());
+        // expecting 2 since the inline data can hold 63 bits already
+        // and spill will always allocate to at least store the inline data
+        assert_eq!(sbs.len(), 2);
+
+        let mut sbs = SmolBitSet::new();
+        assert!(sbs.is_inline());
+
+        sbs.spill(55);
+        assert!(!sbs.is_inline());
+        assert_eq!(sbs.len(), 2);
+
+        let mut sbs = SmolBitSet::new();
+        assert!(sbs.is_inline());
+
+        sbs.spill(64);
+        assert!(!sbs.is_inline());
+        assert_eq!(sbs.len(), 2);
+
+        let mut sbs = SmolBitSet::new();
+        assert!(sbs.is_inline());
+
+        sbs.spill(65);
+        assert!(!sbs.is_inline());
+        assert_eq!(sbs.len(), 3);
+    }
+
+    mod from {
+        use super::*;
+
+        macro_rules! test_from {
+            ($($name:ident, $val:expr),+) => {$(
+                #[test]
+                fn $name() {
+                    let t = SmolBitSet::from($val);
+                    assert!(t.is_inline());
+
+                    let d = unsafe { t.get_inline_data_unchecked() };
+                    assert_eq!(d, $val as usize);
+                }
+            )*}
+        }
+
+        test_from! {
+            u8, 0b1110_1010u8,
+            u8_max, u8::MAX,
+            u16, 0xBEAFu16,
+            u16_max, u16::MAX,
+            u32, 0xF0BA_B0BBu32,
+            u32_max, u32::MAX,
+            u64, 0x7550_1337_0000_F00Fu64
+        }
+
+        #[test]
+        fn u64_hb_64() {
+            let t = SmolBitSet::from(0xC5C5_BEEF_0000_1234u64);
+            assert!(!t.is_inline());
+            assert_eq!(t.len(), 2);
+
+            let d = t.as_slice();
+            assert_eq!(d.len(), 2);
+            assert_eq!(d, [0x0000_1234, 0xC5C5_BEEF]);
+        }
+
+        #[test]
+        fn u64_max() {
+            let t = SmolBitSet::from(u64::MAX);
+            assert_eq!(t.len(), 2);
+
+            let d = t.as_slice();
+            assert_eq!(d.len(), 2);
+            assert_eq!(d, &[u32::MAX; 2]);
+        }
+    }
+
+    mod clone {
+        use super::*;
+
+        #[test]
+        fn inline() {
+            let val = 0xC0FE_FE00u32;
+            let a = SmolBitSet::from(val);
+            #[allow(clippy::redundant_clone)]
+            let b = a.clone();
+
+            assert!(a.is_inline());
+            assert!(b.is_inline());
+
+            let a_data = unsafe { a.get_inline_data_unchecked() };
+            let b_data = unsafe { b.get_inline_data_unchecked() };
+            assert_eq!(a_data, b_data);
+        }
+
+        #[test]
+        fn slice() {
+            let val = 0xFFEE_00AA_1337_0420u64;
+            let a = SmolBitSet::from(val);
+            #[allow(clippy::redundant_clone)]
+            let b = a.clone();
+
+            assert!(!a.is_inline());
+            assert!(!b.is_inline());
+
+            let a_data = a.as_slice();
+            let b_data = b.as_slice();
+            assert_eq!(a_data.len(), b_data.len());
+            assert_eq!(a_data, b_data);
+            assert_eq!(a_data, [0x1337_0420, 0xFFEE_00AA]);
+        }
+    }
+
+    mod shifts {
+        use super::*;
+
+        mod shl {
+            use super::*;
+
+            #[test]
+            fn inline() {
+                let val = 0xABCD_0042u32;
+                let mut a = SmolBitSet::from(val);
+                assert!(a.is_inline());
+
+                a <<= 6u8;
+                assert!(a.is_inline());
+                assert_eq!(
+                    unsafe { a.get_inline_data_unchecked() },
+                    (val as usize) << 6
+                );
+
+                let b = a << 4u8;
+                assert!(b.is_inline());
+                assert_eq!(
+                    unsafe { b.get_inline_data_unchecked() },
+                    (val as usize) << (6 + 4)
+                );
+            }
+
+            #[test]
+            fn grow_to_slice() {
+                let val = 0x00AB_CD55_1337_BEEFu64;
+                let mut a = SmolBitSet::from(val);
+                assert!(a.is_inline());
+
+                a <<= 8u8;
+                assert!(!a.is_inline());
+                assert_eq!(a.len(), 2);
+                assert_eq!(a.as_slice(), [0x37BE_EF00u32, 0xABCD_5513u32]);
+
+                let b = a << 24u8;
+                assert!(!b.is_inline());
+                assert_eq!(b.len(), 3);
+                assert_eq!(
+                    b.as_slice(),
+                    [0x0000_0000u32, 0x1337_BEEFu32, 0x00AB_CD55u32]
+                );
+            }
+        }
+
+        mod shr {
+            use super::*;
+
+            #[test]
+            fn inline() {
+                let val = 0xF00D_BEEFu32;
+                let mut a = SmolBitSet::from(val);
+                assert!(a.is_inline());
+
+                a >>= 10u8;
+                assert!(a.is_inline());
+                assert_eq!(
+                    unsafe { a.get_inline_data_unchecked() },
+                    (val >> 10) as usize
+                );
+
+                let b = a >> 10u8;
+                assert!(b.is_inline());
+                assert_eq!(
+                    unsafe { b.get_inline_data_unchecked() },
+                    (val >> (10 + 10)) as usize
+                );
+            }
+
+            #[test]
+            fn slice() {
+                let val = 0xF420_1337_FEFE_BEEFu64;
+                let mut a = SmolBitSet::from(val);
+                assert!(!a.is_inline());
+                assert_eq!(a.len(), 2);
+
+                a >>= 8u8;
+                assert!(!a.is_inline());
+                assert_eq!(a.as_slice(), [0x37FE_FEBEu32, 0x00F4_2013u32]);
+
+                let b = a >> 24u8;
+                assert!(!b.is_inline());
+                assert_eq!(b.as_slice(), [0xF420_1337u32, 0x0000_0000u32]);
+            }
+        }
+
+        #[test]
+        fn with_offsets() {
+            let val = 0xA5A5_BEEF_1337_A5A5u64;
+            let mut a = SmolBitSet::from(val);
+            assert!(!a.is_inline());
+            assert_eq!(a.len(), 2);
+
+            a <<= 64u16 + 24u16;
+            assert!(!a.is_inline());
+            assert_eq!(a.len(), 2 + 2 + 1);
+            assert_eq!(a.as_slice(), [0, 0, 0xA500_0000, 0xEF13_37A5, 0x00A5_A5BE]);
+
+            a >>= 32u32 + 16u32;
+            assert!(!a.is_inline());
+            assert_eq!(a.len(), 2 + 2 + 1); // still same size, does not auto shrink
+            assert_eq!(a.as_slice(), [0, 0x37A5_A500, 0xA5BE_EF13, 0x0000_00A5, 0],);
+        }
+    }
+
+    mod binops {
+        use super::*;
+
+        mod inline {
+            use super::*;
+
+            macro_rules! test_inline_bitops {
+                ($($name:ident, $a:expr, $b:expr),+) => {$(
+                    #[test]
+                    fn $name() {
+                        let a = SmolBitSet::from($a);
+                        let b = SmolBitSet::from($b);
+                        assert!(a.is_inline());
+                        assert!(b.is_inline());
+
+                        let res = a.$name(b);
+                        assert!(res.is_inline());
+
+                        let d = unsafe { res.get_inline_data_unchecked() };
+                        assert_eq!(d, ($a as usize).$name($b as usize));
+                    }
+                )*}
+            }
+
+            test_inline_bitops! {
+                bitor, 0xF0F0u16, 0x0F0Fu16,
+                bitand, 0xFEFEu16, 0xAFFEu16,
+                bitxor, 0x3A52u16, 0xAAE8u16
+            }
+        }
+
+        mod slice {
+            use super::*;
+
+            macro_rules! test_slice_bitops {
+                ($($name:ident, $a:expr, $b:expr),+) => {$(
+                    #[test]
+                    fn $name() {
+                        let a = SmolBitSet::from($a);
+                        let b = SmolBitSet::from($b);
+                        assert_eq!(a.len(), 2);
+                        assert_eq!(b.len(), 2);
+
+                        let res = a.$name(b);
+                        assert_eq!(res.len(), 2);
+                        assert_eq!(
+                            res.as_slice(),
+                            [
+                                (($a as BitSliceType).$name($b as BitSliceType)),
+                                ((($a >> 32) as BitSliceType).$name(($b >> 32) as BitSliceType))
+                            ]
+                        );
+                    }
+                )*}
+            }
+
+            test_slice_bitops! {
+                bitor, 0xC0FF_EE00_1337_BEEFu64, 0xF00D_BEEF_0420_BEEFu64,
+                bitand, 0xC0FF_EE00_1337_BEEFu64, 0xF00D_BEEF_0420_BEEFu64,
+                bitxor, 0xC0FF_EE00_1337_BEEFu64, 0xF00D_BEEF_0420_BEEFu64
+            }
+        }
+
+        mod mixed {
+            use super::*;
+
+            macro_rules! test_mixed_bitops {
+                ($($name:ident, $a:expr, $b:expr),+) => {$(
+                    #[test]
+                    fn $name() {
+                        let a = SmolBitSet::from($a);
+                        let b = SmolBitSet::from($b);
+                        assert!(a.is_inline());
+                        assert_eq!(b.len(), 2);
+
+                        let res1 = a.clone().$name(b.clone());
+                        assert_eq!(res1.len(), 2);
+                        assert_eq!(
+                            res1.as_slice(),
+                            [
+                                (($a as BitSliceType).$name($b as BitSliceType)),
+                                ((($a >> 32) as BitSliceType).$name(($b >> 32) as BitSliceType))
+                            ]
+                        );
+
+                        let res2 = b.$name(a);
+                        assert_eq!(res2.len(), 2);
+                        assert_eq!(res2.as_slice(), res1.as_slice());
+                    }
+                )*}
+            }
+
+            test_mixed_bitops! {
+                bitor, 0x0ABC_EE00_1337_BEEFu64, 0xF00D_BEEF_0420_BEEFu64,
+                bitand, 0x0ABC_EE00_1337_BEEFu64, 0xF00D_BEEF_0420_BEEFu64,
+                bitxor, 0x0ABC_EE00_1337_BEEFu64, 0xF00D_BEEF_0420_BEEFu64
+            }
         }
     }
 }
