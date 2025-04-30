@@ -85,7 +85,10 @@ impl SmolBitSet {
         let len = len.max(INLINE_SLICE_PARTS);
 
         let layout = slice_layout::<BitSliceType>(len);
-        let ptr = unsafe { alloc::alloc_zeroed(layout).cast::<BitSliceType>() };
+        let ptr = unsafe {
+            #[allow(clippy::cast_ptr_alignment)]
+            alloc::alloc_zeroed(layout).cast::<BitSliceType>()
+        };
         if ptr.is_null() {
             handle_alloc_error(layout)
         }
@@ -128,6 +131,7 @@ impl SmolBitSet {
         let layout = slice_layout::<BitSliceType>(len);
         let new_layout = slice_layout::<BitSliceType>(new_len);
         let new_ptr = unsafe {
+            #[allow(clippy::cast_ptr_alignment)]
             alloc::realloc(self.ptr.cast::<u8>(), layout, new_layout.size()).cast::<BitSliceType>()
         };
         if new_ptr.is_null() {
@@ -194,7 +198,10 @@ impl Clone for SmolBitSet {
         let src = unsafe { self.as_slice_unchecked() };
         let len = src.len();
         let layout = slice_layout::<BitSliceType>(len);
-        let ptr = unsafe { alloc::alloc_zeroed(layout).cast::<BitSliceType>() };
+        let ptr = unsafe {
+            #[allow(clippy::cast_ptr_alignment)]
+            alloc::alloc_zeroed(layout).cast::<BitSliceType>()
+        };
         if ptr.is_null() {
             handle_alloc_error(layout)
         }
