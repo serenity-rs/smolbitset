@@ -4,19 +4,21 @@ use core::{panic, slice};
 use std::alloc::{self, Layout, handle_alloc_error};
 use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign};
 use std::ops::{Shl, ShlAssign, Shr, ShrAssign};
+use std::ptr;
 
 type BitSliceType = u32;
 const BST_BITS: usize = BitSliceType::BITS as usize;
 const INLINE_SLICE_PARTS: usize = usize::BITS as usize / BST_BITS;
 
 pub struct SmolBitSet {
-    ptr: *const BitSliceType,
+    ptr: *mut BitSliceType,
 }
 
 impl SmolBitSet {
-    const fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self {
-            ptr: 1 as *const BitSliceType,
+            ptr: ptr::without_provenance_mut(1),
         }
     }
 
@@ -25,12 +27,14 @@ impl SmolBitSet {
         self.ptr.addr() & 0b1 == 1
     }
 
+    #[inline]
     unsafe fn get_inline_data_unchecked(&self) -> usize {
         self.ptr.addr() >> 1
     }
 
+    #[inline]
     const unsafe fn write_inline_data_unchecked(&mut self, data: usize) {
-        self.ptr = ((data << 1) | 0b1) as *const BitSliceType;
+        self.ptr = ptr::without_provenance_mut((data << 1) | 0b1);
     }
 
     fn len(&self) -> BitSliceType {
@@ -54,6 +58,7 @@ impl SmolBitSet {
         unsafe { self.as_slice_unchecked() }
     }
 
+    #[inline]
     const unsafe fn as_slice_unchecked(&self) -> &[BitSliceType] {
         unsafe { slice::from_raw_parts(self.ptr.add(1), self.len_unchecked() as usize) }
     }
@@ -66,10 +71,9 @@ impl SmolBitSet {
         unsafe { self.as_slice_mut_unchecked() }
     }
 
+    #[inline]
     const unsafe fn as_slice_mut_unchecked(&mut self) -> &mut [BitSliceType] {
-        unsafe {
-            slice::from_raw_parts_mut(self.ptr.add(1).cast_mut(), self.len_unchecked() as usize)
-        }
+        unsafe { slice::from_raw_parts_mut(self.ptr.add(1), self.len_unchecked() as usize) }
     }
 
     fn spill(&mut self, highest_bit: usize) {
@@ -121,16 +125,22 @@ impl SmolBitSet {
         let new_len = (highest_bit).div_ceil(BST_BITS);
         debug_assert!(new_len >= len);
 
+        let layout = slice_layout::<BitSliceType>(len);
         let new_layout = slice_layout::<BitSliceType>(new_len);
         let new_ptr = unsafe {
-            alloc::realloc(self.ptr as *mut u8, new_layout, new_layout.size())
-                .cast::<BitSliceType>()
+            alloc::realloc(self.ptr.cast::<u8>(), layout, new_layout.size()).cast::<BitSliceType>()
         };
         if new_ptr.is_null() {
             handle_alloc_error(new_layout)
         }
 
-        unsafe { *new_ptr = new_len as BitSliceType }; // update the new length in the first element
+        unsafe {
+            // initializing newly allocated memory to zero
+            slice::from_raw_parts_mut(new_ptr.add(1 + len), new_len - len).fill(0);
+
+            // update the new length in the first element
+            *new_ptr = new_len as BitSliceType;
+        }
         self.ptr = new_ptr;
     }
 
@@ -164,7 +174,7 @@ impl Drop for SmolBitSet {
 
         unsafe {
             let layout = slice_layout::<BitSliceType>(self.len_unchecked() as usize);
-            alloc::dealloc(self.ptr as *mut u8, layout);
+            alloc::dealloc(self.ptr.cast::<u8>(), layout);
         }
     }
 }
@@ -593,6 +603,10 @@ mod tests {
         t.ensure_capacity(65);
         assert!(!t.is_inline());
         assert_eq!(t.len(), 3);
+
+        t.ensure_capacity(32 * 40);
+        assert!(!t.is_inline());
+        assert_eq!(t.len(), 40);
     }
 
     #[test]
