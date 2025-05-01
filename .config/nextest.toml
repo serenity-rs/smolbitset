@@ -1,0 +1,20 @@
+[profile.ci]
+fail-fast = false
+failure-output = "final"
+
+[profile.ci.junit]
+path = "report.xml"
+report-name = "nextest"
+store-success-output = false
+store-failure-output = true
+
+[profile.ci-miri]
+slow-timeout = { period = "60s", terminate-after = 2 }
+fail-fast = false
+failure-output = "final"
+
+[profile.ci-miri.junit]
+path = "report-miri.xml"
+report-name = "nextest-miri"
+store-success-output = false
+store-failure-output = true
