@@ -2,42 +2,46 @@
 
 use core::{panic, slice};
 use std::alloc::{self, Layout, handle_alloc_error};
+use std::fmt;
 use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign};
 use std::ops::{Shl, ShlAssign, Shr, ShrAssign};
-use std::ptr;
+use std::ptr::{self, NonNull};
 use std::str::FromStr;
 
 type BitSliceType = u32;
 const BST_BITS: usize = BitSliceType::BITS as usize;
 const INLINE_SLICE_PARTS: usize = usize::BITS as usize / BST_BITS;
 
+#[repr(transparent)]
 pub struct SmolBitSet {
-    ptr: *mut BitSliceType,
+    ptr: NonNull<BitSliceType>,
 }
 
 impl SmolBitSet {
     #[must_use]
+    #[inline]
     pub const fn new() -> Self {
-        Self {
-            ptr: ptr::without_provenance_mut(1),
-        }
+        let ptr = unsafe { NonNull::new_unchecked(ptr::without_provenance_mut(0b1)) };
+        Self { ptr }
     }
 
     #[inline]
     fn is_inline(&self) -> bool {
-        self.ptr.addr() & 0b1 == 1
+        self.ptr.addr().get() & 0b1 == 1
     }
 
     #[inline]
     unsafe fn get_inline_data_unchecked(&self) -> usize {
-        self.ptr.addr() >> 1
+        self.ptr.addr().get() >> 1
     }
 
     #[inline]
     const unsafe fn write_inline_data_unchecked(&mut self, data: usize) {
-        self.ptr = ptr::without_provenance_mut((data << 1) | 0b1);
+        self.ptr =
+            unsafe { NonNull::new_unchecked(ptr::without_provenance_mut((data << 1) | 0b1)) };
     }
 
+    #[inline]
     fn len(&self) -> BitSliceType {
         if self.is_inline() {
             return 0;
@@ -48,9 +52,15 @@ impl SmolBitSet {
 
     #[inline]
     const unsafe fn len_unchecked(&self) -> BitSliceType {
-        unsafe { *self.ptr }
+        unsafe { *self.ptr.as_ptr() }
     }
 
+    #[inline]
+    const unsafe fn data_ptr_unchecked(&self) -> *mut BitSliceType {
+        unsafe { self.ptr.as_ptr().add(1) }
+    }
+
+    #[inline]
     fn as_slice(&self) -> &[BitSliceType] {
         if self.is_inline() {
             return &[];
@@ -61,9 +71,10 @@ impl SmolBitSet {
 
     #[inline]
     const unsafe fn as_slice_unchecked(&self) -> &[BitSliceType] {
-        unsafe { slice::from_raw_parts(self.ptr.add(1), self.len_unchecked() as usize) }
+        unsafe { slice::from_raw_parts(self.data_ptr_unchecked(), self.len_unchecked() as usize) }
     }
 
+    #[inline]
     fn as_slice_mut(&mut self) -> &mut [BitSliceType] {
         if self.is_inline() {
             return &mut [];
@@ -74,7 +85,9 @@ impl SmolBitSet {
 
     #[inline]
     const unsafe fn as_slice_mut_unchecked(&mut self) -> &mut [BitSliceType] {
-        unsafe { slice::from_raw_parts_mut(self.ptr.add(1), self.len_unchecked() as usize) }
+        unsafe {
+            slice::from_raw_parts_mut(self.data_ptr_unchecked(), self.len_unchecked() as usize)
+        }
     }
 
     fn spill(&mut self, highest_bit: usize) {
@@ -99,7 +112,7 @@ impl SmolBitSet {
             slice::from_raw_parts_mut(ptr.add(1), len)
         };
 
-        let old = self.ptr.addr() >> 1;
+        let old = self.ptr.addr().get() >> 1;
 
         new.iter_mut()
             .enumerate()
@@ -108,7 +121,7 @@ impl SmolBitSet {
                 *elem = (old >> (i * BST_BITS)) as BitSliceType;
             });
 
-        self.ptr = ptr;
+        self.ptr = unsafe { NonNull::new_unchecked(ptr) };
     }
 
     fn ensure_capacity(&mut self, highest_bit: usize) {
@@ -133,7 +146,8 @@ impl SmolBitSet {
         let new_layout = slice_layout::<BitSliceType>(new_len);
         let new_ptr = unsafe {
             #[allow(clippy::cast_ptr_alignment)]
-            alloc::realloc(self.ptr.cast::<u8>(), layout, new_layout.size()).cast::<BitSliceType>()
+            alloc::realloc(self.ptr.cast::<u8>().as_ptr(), layout, new_layout.size())
+                .cast::<BitSliceType>()
         };
         if new_ptr.is_null() {
             handle_alloc_error(new_layout)
@@ -146,12 +160,12 @@ impl SmolBitSet {
             // update the new length in the first element
             *new_ptr = new_len as BitSliceType;
         }
-        self.ptr = new_ptr;
+        self.ptr = unsafe { NonNull::new_unchecked(new_ptr) };
     }
 
     fn highest_set_bit(&self) -> usize {
         if self.is_inline() {
-            let data = self.ptr.addr() >> 1;
+            let data = self.ptr.addr().get() >> 1;
             return highest_set_bit_usize(data);
         }
 
@@ -172,6 +186,7 @@ impl SmolBitSet {
 }
 
 impl Drop for SmolBitSet {
+    #[inline]
     fn drop(&mut self) {
         if self.is_inline() {
             return;
@@ -179,12 +194,13 @@ impl Drop for SmolBitSet {
 
         unsafe {
             let layout = slice_layout::<BitSliceType>(self.len_unchecked() as usize);
-            alloc::dealloc(self.ptr.cast::<u8>(), layout);
+            alloc::dealloc(self.ptr.cast::<u8>().as_ptr(), layout);
         }
     }
 }
 
 impl Default for SmolBitSet {
+    #[inline]
     fn default() -> Self {
         Self::new()
     }
@@ -213,12 +229,13 @@ impl Clone for SmolBitSet {
         };
         new_data.copy_from_slice(src);
 
+        let ptr = unsafe { NonNull::new_unchecked(ptr) };
         Self { ptr }
     }
 }
 
 fn slice_layout<T>(len: usize) -> Layout {
-    let len = len + 1; // +1 for the length since we store the length in the first element
+    let len: usize = len + 1; // +1 for the length since we store the length in the first element
     let single = Layout::new::<T>().pad_to_align();
     if let Some(size) = single.size().checked_mul(len) {
         Layout::from_size_align(size, single.align()).expect("Layout error in SmolBitSet slice")
@@ -352,6 +369,7 @@ macro_rules! impl_shifts {
         impl Shl<$t> for SmolBitSet {
             type Output = Self;
 
+            #[inline]
             fn shl(mut self, rhs: $t) -> Self {
                 sbs_shl(&mut self, rhs as usize);
                 self
@@ -359,6 +377,7 @@ macro_rules! impl_shifts {
         }
 
         impl ShlAssign<$t> for SmolBitSet {
+            #[inline]
             fn shl_assign(&mut self, rhs: $t) {
                 sbs_shl(self, rhs as usize);
             }
@@ -367,6 +386,7 @@ macro_rules! impl_shifts {
         impl Shr<$t> for SmolBitSet {
             type Output = Self;
 
+            #[inline]
             fn shr(mut self, rhs: $t) -> Self {
                 sbs_shr(&mut self, rhs as usize);
                 self
@@ -374,6 +394,7 @@ macro_rules! impl_shifts {
         }
 
         impl ShrAssign<$t> for SmolBitSet {
+            #[inline]
             fn shr_assign(&mut self, rhs: $t) {
                 sbs_shr(self, rhs as usize);
             }
@@ -385,12 +406,14 @@ macro_rules! impl_shifts {
         impl Shl<&$t> for SmolBitSet {
             type Output = Self;
 
+            #[inline]
             fn shl(self, rhs: &$t) -> Self {
                 self.shl(*rhs)
             }
         }
 
         impl ShlAssign<&$t> for SmolBitSet {
+            #[inline]
             fn shl_assign(&mut self, rhs: &$t) {
                 self.shl_assign(*rhs)
             }
@@ -399,12 +422,14 @@ macro_rules! impl_shifts {
         impl Shr<&$t> for SmolBitSet {
             type Output = Self;
 
+            #[inline]
             fn shr(self, rhs: &$t) -> Self {
                 self.shr(*rhs)
             }
         }
 
         impl ShrAssign<&$t> for SmolBitSet {
+            #[inline]
             fn shr_assign(&mut self, rhs: &$t) {
                 self.shr_assign(*rhs)
             }
@@ -419,6 +444,7 @@ macro_rules! impl_bitop {
         impl $OP<Self> for SmolBitSet {
             type Output = Self;
 
+            #[inline]
             fn $op(self, rhs: Self) -> Self {
                 let mut lhs = self;
                 lhs.$opa(rhs);
@@ -427,6 +453,7 @@ macro_rules! impl_bitop {
         }
 
         impl $OPA<Self> for SmolBitSet {
+            #[inline]
             fn $opa(&mut self, rhs: Self) {
                 self.$opa(&rhs);
             }
@@ -438,6 +465,7 @@ macro_rules! impl_bitop {
         impl $OP<&Self> for SmolBitSet {
             type Output = Self;
 
+            #[inline]
             fn $op(self, rhs: &Self) -> Self {
                 let mut lhs = self;
                 lhs.$opa(rhs);
@@ -499,6 +527,7 @@ macro_rules! impl_binop_prim {
         impl $OP<$t> for SmolBitSet {
             type Output = Self;
 
+            #[inline]
             fn $op(self, rhs: $t) -> Self {
                 let mut lhs = self;
                 lhs.$opa(rhs);
@@ -507,6 +536,7 @@ macro_rules! impl_binop_prim {
         }
 
         impl $OPA<$t> for SmolBitSet {
+            #[inline]
             fn $opa(&mut self, rhs: $t) {
                 self.$opa(Self::from(rhs))
             }
@@ -518,12 +548,14 @@ macro_rules! impl_binop_prim {
         impl $OP<&$t> for SmolBitSet {
             type Output = Self;
 
+            #[inline]
             fn $op(self, rhs: &$t) -> Self {
                 self.$op(*rhs)
             }
         }
 
         impl $OPA<&$t> for SmolBitSet {
+            #[inline]
             fn $opa(&mut self, rhs: &$t) {
                 self.$opa(*rhs)
             }
@@ -566,6 +598,7 @@ macro_rules! impl_from {
     )*};
     (@ref $t:ty) => {
         impl From<&$t> for SmolBitSet {
+            #[inline]
             fn from(value: &$t) -> Self {
                 Self::from(*value)
             }
@@ -575,8 +608,8 @@ macro_rules! impl_from {
 
 impl_from!(u8, u16, u32, u64, usize);
 
-impl std::fmt::Display for SmolBitSet {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for SmolBitSet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.is_inline() {
             return write!(f, "{}", unsafe { self.get_inline_data_unchecked() });
         }
@@ -589,6 +622,7 @@ impl std::fmt::Display for SmolBitSet {
 impl TryFrom<String> for SmolBitSet {
     type Error = ();
 
+    #[inline]
     fn try_from(value: String) -> Result<Self, Self::Error> {
         Self::from_str(value.as_str())
     }
