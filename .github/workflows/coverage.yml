@@ -35,12 +35,6 @@ jobs:
           filename: coverage.xml
           format: markdown
           output: both
-      - name: Add PR comment
-        uses: marocchino/sticky-pull-request-comment@v2
-        if: github.event_name == 'pull_request'
-        with:
-          recreate: true
-          path: code-coverage-results.md
       - name: Write to job summary
         run: cat code-coverage-results.md >> $GITHUB_STEP_SUMMARY
       # - name: Upload coverage data to codecov
