@@ -19,7 +19,7 @@ impl SmolBitSet {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            ptr: 1 as _, //ptr::without_provenance_mut(1),
+            ptr: ptr::without_provenance_mut(1),
         }
     }
 
@@ -86,7 +86,10 @@ impl SmolBitSet {
         let len = len.max(INLINE_SLICE_PARTS);
 
         let layout = slice_layout::<BitSliceType>(len);
-        let ptr = unsafe { alloc::alloc_zeroed(layout).cast::<BitSliceType>() };
+        let ptr = unsafe {
+            #[allow(clippy::cast_ptr_alignment)]
+            alloc::alloc_zeroed(layout).cast::<BitSliceType>()
+        };
         if ptr.is_null() {
             handle_alloc_error(layout)
         }
@@ -138,7 +141,7 @@ impl SmolBitSet {
 
         unsafe {
             // initializing newly allocated memory to zero
-            // slice::from_raw_parts_mut(new_ptr.add(1 + len), new_len - len).fill(0);
+            slice::from_raw_parts_mut(new_ptr.add(1 + len), new_len - len).fill(0);
 
             // update the new length in the first element
             *new_ptr = new_len as BitSliceType;
