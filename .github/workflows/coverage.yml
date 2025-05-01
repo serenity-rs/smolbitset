@@ -1,6 +1,11 @@
 name: Test Coverage
 
-on: [push, pull_request]
+on: 
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
 
 jobs:
   coverage:
@@ -23,7 +28,11 @@ jobs:
         run: |
           cargo llvm-cov --no-report nextest
           cargo llvm-cov --no-report --doc
-          cargo llvm-cov report --doctests --lcov --output-path lcov.info
+          cargo llvm-cov report --doctests --cobertura --output-path coverage.xml
+      - name: Coverage report
+        uses: insightsengineering/coverage-action@v2
+        with:
+          togglable-report: true
       # - name: Upload coverage data to codecov
       #   uses: codecov/codecov-action@v5
       #   env:
