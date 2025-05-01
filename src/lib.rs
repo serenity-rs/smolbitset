@@ -286,6 +286,11 @@ fn sbs_shl(sbs: &mut SmolBitSet, rhs: usize) {
         }
 
         let shift = rhs % BST_BITS;
+        if shift == 0 {
+            // offset shifting was enough
+            return;
+        }
+
         let carry_shift = BST_BITS - shift;
         let mut carry = 0;
         for d in data.iter_mut() {
@@ -326,6 +331,11 @@ fn sbs_shr(sbs: &mut SmolBitSet, rhs: usize) {
         }
 
         let shift = rhs % BST_BITS;
+        if shift == 0 {
+            // offset shifting was enough
+            return;
+        }
+
         let carry_shift = BST_BITS - shift;
         let mut carry = 0;
         for d in data.iter_mut().rev() {
@@ -807,17 +817,30 @@ mod tests {
                 assert!(a.is_inline());
 
                 a <<= 8u8;
-                assert!(!a.is_inline());
                 assert_eq!(a.len(), 2);
                 assert_eq!(a.as_slice(), [0x37BE_EF00u32, 0xABCD_5513u32]);
 
                 let b = a << 24u8;
-                assert!(!b.is_inline());
                 assert_eq!(b.len(), 3);
                 assert_eq!(
                     b.as_slice(),
                     [0x0000_0000u32, 0x1337_BEEFu32, 0x00AB_CD55u32]
                 );
+            }
+
+            #[test]
+            fn by_multiple_of_32() {
+                let val = 0xFFEE_00AA_AFFE_BEEFu64;
+                let mut a = SmolBitSet::from(val);
+                assert!(!a.is_inline());
+
+                a <<= 32u8;
+                assert_eq!(a.len(), 3);
+                assert_eq!(a.as_slice(), [0, 0xAFFE_BEEFu32, 0xFFEE_00AAu32]);
+
+                a <<= 64u8;
+                assert_eq!(a.len(), 5);
+                assert_eq!(a.as_slice(), [0, 0, 0, 0xAFFE_BEEFu32, 0xFFEE_00AAu32]);
             }
         }
 
@@ -859,6 +882,22 @@ mod tests {
                 let b = a >> 24u8;
                 assert!(!b.is_inline());
                 assert_eq!(b.as_slice(), [0xF420_1337u32, 0x0000_0000u32]);
+            }
+
+            #[test]
+            fn by_multiple_of_32() {
+                let val = 0xFFEE_00AA_AFFE_BEEFu64;
+                let mut a = SmolBitSet::from(val);
+                assert!(!a.is_inline());
+
+                a >>= 32u8;
+                assert_eq!(a.len(), 2);
+                assert_eq!(a.as_slice(), [0xFFEE_00AAu32, 0]);
+
+                let mut a = SmolBitSet::from(val);
+                a >>= 64u8;
+                assert_eq!(a.len(), 2);
+                assert_eq!(a.as_slice(), [0, 0]);
             }
         }
 
