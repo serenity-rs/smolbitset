@@ -70,20 +70,8 @@ jobs:
           targets: ${{ matrix.target }}
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
-      - name: Install nextest
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-nextest
       - name: Run miri
-        run: cargo miri nextest run -P ci-miri --target ${{ matrix.target }}
-      - name: Report
-        uses: dorny/test-reporter@v2
-        if: '!cancelled()'
-        with:
-          name: miri [${{ matrix.endianness }}]
-          path: target/nextest/ci-miri/report-miri.xml
-          reporter: java-junit
-          fail-on-error: true
+        run: MIRIFLAGS=-Zmiri-strict-provenance cargo miri test --target ${{ matrix.target }}
 
   tests:
     name: Tests
@@ -97,17 +85,5 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-      - name: Install nextest
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-nextest
       - name: Run tests
-        run: cargo nextest run -P ci
-      - name: Test Report
-        uses: dorny/test-reporter@v2
-        if: '!cancelled()'
-        with:
-          name: nextest
-          path: target/nextest/ci/report.xml
-          reporter: java-junit
-          fail-on-error: true
+        run: cargo test
