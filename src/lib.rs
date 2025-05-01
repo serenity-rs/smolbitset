@@ -461,9 +461,12 @@ macro_rules! impl_bitop {
                         let lhs = unsafe { self.as_slice_mut_unchecked() };
                         let rhs = unsafe { rhs.as_slice_unchecked() };
 
-                        assert_eq!(lhs.len(), rhs.len());
+                        assert!(lhs.len() >= rhs.len());
 
-                        for (lhs, rhs) in lhs.iter_mut().zip(rhs.iter()) {
+                        // in case lhs > rhs we need to have extra elements
+                        let rhs_iter = rhs.iter().chain(std::iter::repeat(&0));
+
+                        for (lhs, rhs) in lhs.iter_mut().zip(rhs_iter) {
                             (*lhs).$opa(*rhs);
                         }
                     }
@@ -926,7 +929,7 @@ mod tests {
         mod inline {
             use super::*;
 
-            macro_rules! test_inline_bitops {
+            macro_rules! test_inline_binops {
                 ($($name:ident, $a:expr, $b:expr),+) => {$(
                     #[test]
                     fn $name() {
@@ -944,7 +947,7 @@ mod tests {
                 )*}
             }
 
-            test_inline_bitops! {
+            test_inline_binops! {
                 bitor, 0xF0F0u16, 0x0F0Fu16,
                 bitand, 0xFEFEu16, 0xAFFEu16,
                 bitxor, 0x3A52u16, 0xAAE8u16
@@ -954,7 +957,7 @@ mod tests {
         mod slice {
             use super::*;
 
-            macro_rules! test_slice_bitops {
+            macro_rules! test_slice_binops {
                 ($($name:ident, $a:expr, $b:expr),+) => {$(
                     #[test]
                     fn $name() {
@@ -976,7 +979,7 @@ mod tests {
                 )*}
             }
 
-            test_slice_bitops! {
+            test_slice_binops! {
                 bitor, 0xC0FF_EE00_1337_BEEFu64, 0xF00D_BEEF_0420_BEEFu64,
                 bitand, 0xC0FF_EE00_1337_BEEFu64, 0xF00D_BEEF_0420_BEEFu64,
                 bitxor, 0xC0FF_EE00_1337_BEEFu64, 0xF00D_BEEF_0420_BEEFu64
@@ -986,7 +989,7 @@ mod tests {
         mod mixed {
             use super::*;
 
-            macro_rules! test_mixed_bitops {
+            macro_rules! test_mixed_binops {
                 ($($name:ident, $a:expr, $b:expr),+) => {$(
                     #[test]
                     fn $name() {
@@ -1012,7 +1015,75 @@ mod tests {
                 )*}
             }
 
-            test_mixed_bitops! {
+            test_mixed_binops! {
+                bitor, 0x0ABC_EE00_1337_BEEFu64, 0xF00D_BEEF_0420_BEEFu64,
+                bitand, 0x0ABC_EE00_1337_BEEFu64, 0xF00D_BEEF_0420_BEEFu64,
+                bitxor, 0x0ABC_EE00_1337_BEEFu64, 0xF00D_BEEF_0420_BEEFu64
+            }
+        }
+
+        mod rhs_smaller {
+            use super::*;
+
+            macro_rules! test_rhs_smaller_binops {
+                ($($name:ident, $a:expr, $b:expr),+) => {$(
+                    #[test]
+                    fn $name() {
+                        let mut lhs = SmolBitSet::from($a);
+                        let rhs = SmolBitSet::from($b);
+                        lhs <<= 32u8;
+                        let lhs_len = lhs.len();
+                        assert!(lhs_len > rhs.len());
+
+                        let res = lhs.$name(rhs);
+                        assert_eq!(res.len(), lhs_len);
+                        assert_eq!(
+                            res.as_slice(),
+                            [
+                                ((0 as BitSliceType).$name($b as BitSliceType)),
+                                ((($a) as BitSliceType).$name(($b >> 32) as BitSliceType)),
+                                ((($a >> 32) as BitSliceType).$name((0 as BitSliceType)))
+                            ]
+                        );
+                    }
+                )*};
+            }
+
+            test_rhs_smaller_binops! {
+                bitor, 0x0ABC_EE00_1337_BEEFu64, 0xF00D_BEEF_0420_BEEFu64,
+                bitand, 0x0ABC_EE00_1337_BEEFu64, 0xF00D_BEEF_0420_BEEFu64,
+                bitxor, 0x0ABC_EE00_1337_BEEFu64, 0xF00D_BEEF_0420_BEEFu64
+            }
+        }
+
+        mod rhs_larger {
+            use super::*;
+
+            macro_rules! test_rhs_larger_binops {
+                ($($name:ident, $a:expr, $b:expr),+) => {$(
+                    #[test]
+                    fn $name() {
+                        let lhs = SmolBitSet::from($a);
+                        let mut rhs = SmolBitSet::from($b);
+                        rhs <<= 32u8;
+                        let rhs_len = rhs.len();
+                        assert!(rhs_len > lhs.len());
+
+                        let res = lhs.$name(rhs);
+                        assert_eq!(res.len(), rhs_len);
+                        assert_eq!(
+                            res.as_slice(),
+                            [
+                                (($a as BitSliceType).$name((0 as BitSliceType))),
+                                ((($a >> 32) as BitSliceType).$name($b as BitSliceType)),
+                                ((0 as BitSliceType).$name((($b >> 32) as BitSliceType)))
+                            ]
+                        );
+                    }
+                )*};
+            }
+
+            test_rhs_larger_binops! {
                 bitor, 0x0ABC_EE00_1337_BEEFu64, 0xF00D_BEEF_0420_BEEFu64,
                 bitand, 0x0ABC_EE00_1337_BEEFu64, 0xF00D_BEEF_0420_BEEFu64,
                 bitxor, 0x0ABC_EE00_1337_BEEFu64, 0xF00D_BEEF_0420_BEEFu64
