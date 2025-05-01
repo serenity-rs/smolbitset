@@ -73,7 +73,7 @@ jobs:
         run: cargo miri nextest run -P ci-miri --target ${{ matrix.target }}
       - name: Report
         uses: dorny/test-reporter@v2
-        if: !cancelled()
+        if: '!cancelled()'
         with:
           name: miri [${{ matrix.endianness }}]
           path: target/nextest/ci-miri/report-miri.xml
@@ -100,7 +100,7 @@ jobs:
         run: cargo nextest run -P ci
       - name: Test Report
         uses: dorny/test-reporter@v2
-        if: !cancelled()
+        if: '!cancelled()'
         with:
           name: nextest
           path: target/nextest/ci/report.xml
