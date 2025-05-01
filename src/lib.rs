@@ -5,6 +5,7 @@ use std::alloc::{self, Layout, handle_alloc_error};
 use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign};
 use std::ops::{Shl, ShlAssign, Shr, ShrAssign};
 use std::ptr;
+use std::str::FromStr;
 
 type BitSliceType = u32;
 const BST_BITS: usize = BitSliceType::BITS as usize;
@@ -574,8 +575,62 @@ macro_rules! impl_from {
 
 impl_from!(u8, u16, u32, u64, usize);
 
+impl std::fmt::Display for SmolBitSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.is_inline() {
+            return write!(f, "{}", unsafe { self.get_inline_data_unchecked() });
+        }
+
+        let tmp = num_bigint::BigUint::from_slice(unsafe { self.as_slice_unchecked() });
+        write!(f, "{tmp}")
+    }
+}
+
+impl TryFrom<String> for SmolBitSet {
+    type Error = ();
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::from_str(value.as_str())
+    }
+}
+
+impl FromStr for SmolBitSet {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let tmp = num_bigint::BigUint::from_str(s).map_err(|_| ())?;
+
+        let mut sbs = Self::new();
+        sbs.ensure_capacity(tmp.bits() as usize);
+
+        let digits = tmp.to_u32_digits();
+        let digit_count = digits.len();
+        if sbs.is_inline() {
+            match digit_count {
+                0 => {}
+                1 => unsafe { sbs.write_inline_data_unchecked(digits[0] as usize) },
+                2 => unsafe {
+                    sbs.write_inline_data_unchecked(
+                        (digits[0] as usize) | ((digits[1] as usize) << u32::BITS),
+                    );
+                },
+                _ => unreachable!("Too many digits for inline data"),
+            }
+        } else {
+            assert!(sbs.len() as usize >= digit_count);
+
+            let data = unsafe { sbs.as_slice_mut_unchecked() };
+            data[0..digit_count].copy_from_slice(&digits);
+        }
+
+        Ok(sbs)
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
 
     #[test]
@@ -700,6 +755,34 @@ mod tests {
         sbs.spill(65);
         assert!(!sbs.is_inline());
         assert_eq!(sbs.len(), 3);
+    }
+
+    #[test]
+    fn deserialize() {
+        let sbs = SmolBitSet::try_from(String::from("1337")).unwrap();
+        assert!(sbs.is_inline());
+        assert_eq!(unsafe { sbs.get_inline_data_unchecked() }, 1337);
+
+        // A5A5 1337 0000 C0FF EE00 BEEF 0000 A5A5
+        let sbs =
+            SmolBitSet::try_from(String::from("220179738009501684669546686565819917733")).unwrap();
+        assert!(!sbs.is_inline());
+        assert_eq!(
+            sbs.as_slice(),
+            [0x0000_A5A5, 0xEE00_BEEF, 0x0000_C0FF, 0xA5A5_1337]
+        );
+    }
+
+    #[test]
+    fn serialize() {
+        let sbs = SmolBitSet::from(1337u32);
+        assert_eq!(sbs.to_string(), "1337");
+
+        // A5A5 1337 0000 C0FF EE00 BEEF 0000 A5A5
+        let mut sbs = SmolBitSet::from(0xA5A5_1337_0000_C0FFu64);
+        sbs <<= 64u8;
+        sbs |= 0xEE00_BEEF_0000_A5A5u64;
+        assert_eq!(sbs.to_string(), "220179738009501684669546686565819917733");
     }
 
     mod from {

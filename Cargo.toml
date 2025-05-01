@@ -5,6 +5,7 @@ edition = "2024"
 rust-version = "1.85.0"
 
 [dependencies]
+num-bigint = "0.4.6"
 
 [lints.clippy]
 nursery = { level = "warn", priority = -1 }
