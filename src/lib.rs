@@ -120,9 +120,13 @@ impl SmolBitSet {
             (*ptr).write(len as BitSliceType); // store the length in the first element
             let old = self.get_inline_data_unchecked();
 
-            for i in 0..cmp::max(len, INLINE_SLICE_PARTS) {
+            for i in 0..INLINE_SLICE_PARTS {
                 let data = (old >> (i * BST_BITS)) as BitSliceType;
                 (*ptr.add(1 + i)).write(data);
+            }
+
+            for i in INLINE_SLICE_PARTS..len {
+                (*ptr.add(1 + i)).write(0);
             }
         };
 
@@ -272,14 +276,20 @@ fn slice_layout<T>(len: usize) -> Layout {
     layout
 }
 
+/// Returns the index of the most significant bit set to 1 in the given data.
+///
+/// Note: the least significant bit is at index 1!
 #[inline]
-fn highest_set_bit(data: BitSliceType) -> usize {
-    (BitSliceType::BITS - data.trailing_zeros()).saturating_sub(1) as usize
+const fn highest_set_bit(data: BitSliceType) -> usize {
+    (BitSliceType::BITS - data.leading_zeros()) as usize
 }
 
+/// Returns the index of the most significant bit set to 1 in the given data.
+///
+/// Note: the least significant bit is at index 1!
 #[inline]
-fn highest_set_bit_usize(data: usize) -> usize {
-    (usize::BITS - data.trailing_zeros()).saturating_sub(1) as usize
+const fn highest_set_bit_usize(data: usize) -> usize {
+    (usize::BITS - data.leading_zeros()) as usize
 }
 
 fn sbs_shl(sbs: &mut SmolBitSet, rhs: usize) {
