@@ -4,12 +4,11 @@ use core::{panic, slice};
 use std::alloc::{self, Layout, handle_alloc_error};
 use std::convert::Infallible;
 use std::mem::MaybeUninit;
-use std::num::NonZeroUsize;
 use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign};
 use std::ops::{Shl, ShlAssign, Shr, ShrAssign};
 use std::ptr::{self, NonNull};
 use std::str::FromStr;
-use std::{cmp, fmt, hint};
+use std::{cmp, fmt};
 
 type BitSliceType = u32;
 const BST_BITS: usize = BitSliceType::BITS as usize;
