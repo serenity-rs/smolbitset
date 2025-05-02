@@ -4,8 +4,12 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.85.0"
 
+[features]
+default = ["std"]
+std = ["num-bigint/std"]
+
 [dependencies]
-num-bigint = "0.4.6"
+num-bigint = { version = "0.4.6", default-features = false }
 
 [lints.clippy]
 nursery = { level = "warn", priority = -1 }

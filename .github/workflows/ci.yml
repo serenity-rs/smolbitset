@@ -86,4 +86,6 @@ jobs:
         with:
           cache-on-failure: true
       - name: Run tests
-        run: cargo test
+        run: |
+          cargo test --no-fail-fast
+          cargo test --no-fail-fast --no-default-features
