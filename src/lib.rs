@@ -1,14 +1,38 @@
 #![allow(dead_code)]
+#![cfg_attr(not(feature = "std"), no_std)]
 
-use core::{panic, slice};
-use std::alloc::{self, Layout, handle_alloc_error};
-use std::convert::Infallible;
-use std::mem::MaybeUninit;
-use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign};
-use std::ops::{Shl, ShlAssign, Shr, ShrAssign};
-use std::ptr::{self, NonNull};
-use std::str::FromStr;
-use std::{cmp, fmt};
+#[cfg(not(feature = "std"))]
+extern crate alloc as extern_alloc;
+#[cfg(all(not(feature = "std"), test))]
+use extern_alloc::string::ToString;
+#[cfg(not(feature = "std"))]
+use {
+    core::convert::Infallible,
+    core::iter,
+    core::mem::MaybeUninit,
+    core::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign},
+    core::ops::{Shl, ShlAssign, Shr, ShrAssign},
+    core::ptr::{self, NonNull},
+    core::slice,
+    core::str::FromStr,
+    core::{cmp, fmt},
+    extern_alloc::alloc::{self, Layout, handle_alloc_error},
+    extern_alloc::string::String,
+};
+
+#[cfg(feature = "std")]
+use {
+    std::alloc::{self, Layout, handle_alloc_error},
+    std::convert::Infallible,
+    std::iter,
+    std::mem::MaybeUninit,
+    std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign},
+    std::ops::{Shl, ShlAssign, Shr, ShrAssign},
+    std::ptr::{self, NonNull},
+    std::slice,
+    std::str::FromStr,
+    std::{cmp, fmt},
+};
 
 type BitSliceType = u32;
 const BST_BITS: usize = BitSliceType::BITS as usize;
@@ -513,7 +537,7 @@ macro_rules! impl_bitop {
                         assert!(lhs.len() >= rhs.len());
 
                         // in case lhs > rhs we need to have extra elements
-                        let rhs_iter = rhs.iter().chain(std::iter::repeat(&0));
+                        let rhs_iter = rhs.iter().chain(iter::repeat(&0));
 
                         for (lhs, rhs) in lhs.iter_mut().zip(rhs_iter) {
                             (*lhs).$opa(*rhs);
