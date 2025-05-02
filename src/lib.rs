@@ -2,11 +2,14 @@
 
 use core::{panic, slice};
 use std::alloc::{self, Layout, handle_alloc_error};
-use std::fmt;
+use std::convert::Infallible;
+use std::mem::MaybeUninit;
+use std::num::NonZeroUsize;
 use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign};
 use std::ops::{Shl, ShlAssign, Shr, ShrAssign};
 use std::ptr::{self, NonNull};
 use std::str::FromStr;
+use std::{cmp, fmt, hint};
 
 type BitSliceType = u32;
 const BST_BITS: usize = BitSliceType::BITS as usize;
@@ -90,44 +93,48 @@ impl SmolBitSet {
         }
     }
 
+    #[inline]
     fn spill(&mut self, highest_bit: usize) {
         if !self.is_inline() {
             return;
         }
 
-        let len = (highest_bit).div_ceil(BST_BITS);
-        let len = len.max(INLINE_SLICE_PARTS);
+        unsafe {
+            self.do_spill(highest_bit);
+        }
+    }
+
+    unsafe fn do_spill(&mut self, highest_bit: usize) {
+        let len = highest_bit.div_ceil(BST_BITS);
+        let len = cmp::max(len, INLINE_SLICE_PARTS);
 
         let layout = slice_layout::<BitSliceType>(len);
         let ptr = unsafe {
             #[allow(clippy::cast_ptr_alignment)]
-            alloc::alloc_zeroed(layout).cast::<BitSliceType>()
+            alloc::alloc(layout).cast::<MaybeUninit<BitSliceType>>()
         };
         if ptr.is_null() {
             handle_alloc_error(layout)
         }
 
-        let new = unsafe {
-            *ptr = len as BitSliceType; // store the length in the first element
-            slice::from_raw_parts_mut(ptr.add(1), len)
+        unsafe {
+            (*ptr).write(len as BitSliceType); // store the length in the first element
+            let old = self.get_inline_data_unchecked();
+
+            for i in 0..cmp::max(len, INLINE_SLICE_PARTS) {
+                let data = (old >> (i * BST_BITS)) as BitSliceType;
+                (*ptr.add(1 + i)).write(data);
+            }
         };
 
-        let old = self.ptr.addr().get() >> 1;
-
-        new.iter_mut()
-            .enumerate()
-            .take(INLINE_SLICE_PARTS)
-            .for_each(|(i, elem)| {
-                *elem = (old >> (i * BST_BITS)) as BitSliceType;
-            });
-
-        self.ptr = unsafe { NonNull::new_unchecked(ptr) };
+        self.ptr = unsafe { NonNull::new_unchecked(ptr.cast()) };
     }
 
+    #[inline]
     fn ensure_capacity(&mut self, highest_bit: usize) {
         if self.is_inline() {
             if highest_bit >= (usize::BITS as usize) {
-                self.spill(highest_bit);
+                unsafe { self.do_spill(highest_bit) }
             }
 
             return;
@@ -138,8 +145,14 @@ impl SmolBitSet {
             return;
         }
 
+        unsafe {
+            self.do_grow(len, highest_bit);
+        }
+    }
+
+    unsafe fn do_grow(&mut self, len: usize, highest_bit: usize) {
         // we need to grow our slice allocation
-        let new_len = (highest_bit).div_ceil(BST_BITS);
+        let new_len = highest_bit.div_ceil(BST_BITS);
         debug_assert!(new_len >= len);
 
         let layout = slice_layout::<BitSliceType>(len);
@@ -163,25 +176,22 @@ impl SmolBitSet {
         self.ptr = unsafe { NonNull::new_unchecked(new_ptr) };
     }
 
+    #[inline]
     fn highest_set_bit(&self) -> usize {
         if self.is_inline() {
-            let data = self.ptr.addr().get() >> 1;
+            let data = unsafe { self.get_inline_data_unchecked() };
             return highest_set_bit_usize(data);
         }
 
         let data = unsafe { self.as_slice_unchecked() };
-        let mut highest = 0;
         for (idx, &data) in data.iter().enumerate().rev() {
             let h = highest_set_bit(data);
-            if h == 0 {
-                continue;
+            if h != 0 {
+                return (idx * BST_BITS) + h;
             }
-
-            highest = (idx * BST_BITS) + h;
-            break;
         }
 
-        highest
+        0
     }
 }
 
@@ -234,42 +244,43 @@ impl Clone for SmolBitSet {
     }
 }
 
+#[inline]
 fn slice_layout<T>(len: usize) -> Layout {
+    #[cold]
+    #[inline(never)]
+    fn layout_err() -> Infallible {
+        panic!("layout error in SmolBitSet slice")
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn overflow_err() -> Infallible {
+        panic!("overflow error in SmolBitSet slice")
+    }
+
     let len: usize = len + 1; // +1 for the length since we store the length in the first element
     let single = Layout::new::<T>().pad_to_align();
-    if let Some(size) = single.size().checked_mul(len) {
-        Layout::from_size_align(size, single.align()).expect("Layout error in SmolBitSet slice")
-    } else {
-        panic!("Overflow in SmolBitSet slice layout");
-    }
+    let Some(size) = single.size().checked_mul(len) else {
+        #[allow(unreachable_code)]
+        match overflow_err() {}
+    };
+
+    let Ok(layout) = Layout::from_size_align(size, single.align()) else {
+        #[allow(unreachable_code)]
+        match layout_err() {}
+    };
+
+    layout
 }
 
+#[inline]
 fn highest_set_bit(data: BitSliceType) -> usize {
-    if data == 0 {
-        return 0;
-    }
-
-    for i in (0..BST_BITS).rev() {
-        if data & (1 << i) != 0 {
-            return i + 1;
-        }
-    }
-
-    0
+    (BitSliceType::BITS - data.trailing_zeros()).saturating_sub(1) as usize
 }
 
+#[inline]
 fn highest_set_bit_usize(data: usize) -> usize {
-    if data == 0 {
-        return 0;
-    }
-
-    for i in (0..usize::BITS as usize).rev() {
-        if data & (1 << i) != 0 {
-            return i + 1;
-        }
-    }
-
-    0
+    (usize::BITS - data.trailing_zeros()).saturating_sub(1) as usize
 }
 
 fn sbs_shl(sbs: &mut SmolBitSet, rhs: usize) {
