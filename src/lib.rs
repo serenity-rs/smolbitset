@@ -77,7 +77,7 @@ impl SmolBitSet {
     }
 
     #[inline]
-    fn len(&self) -> BitSliceType {
+    fn len(&self) -> usize {
         if self.is_inline() {
             return 0;
         }
@@ -86,8 +86,8 @@ impl SmolBitSet {
     }
 
     #[inline]
-    const unsafe fn len_unchecked(&self) -> BitSliceType {
-        unsafe { *self.ptr.as_ptr() }
+    const unsafe fn len_unchecked(&self) -> usize {
+        unsafe { *self.ptr.as_ptr() as usize }
     }
 
     #[inline]
@@ -106,7 +106,7 @@ impl SmolBitSet {
 
     #[inline]
     const unsafe fn as_slice_unchecked(&self) -> &[BitSliceType] {
-        unsafe { slice::from_raw_parts(self.data_ptr_unchecked(), self.len_unchecked() as usize) }
+        unsafe { slice::from_raw_parts(self.data_ptr_unchecked(), self.len_unchecked()) }
     }
 
     #[inline]
@@ -120,9 +120,7 @@ impl SmolBitSet {
 
     #[inline]
     const unsafe fn as_slice_mut_unchecked(&mut self) -> &mut [BitSliceType] {
-        unsafe {
-            slice::from_raw_parts_mut(self.data_ptr_unchecked(), self.len_unchecked() as usize)
-        }
+        unsafe { slice::from_raw_parts_mut(self.data_ptr_unchecked(), self.len_unchecked()) }
     }
 
     #[inline]
@@ -176,7 +174,7 @@ impl SmolBitSet {
             return;
         }
 
-        let len = unsafe { self.len_unchecked() } as usize;
+        let len = unsafe { self.len_unchecked() };
         if highest_bit < (BST_BITS * len) {
             return;
         }
@@ -239,7 +237,7 @@ impl Drop for SmolBitSet {
         }
 
         unsafe {
-            let layout = slice_layout::<BitSliceType>(self.len_unchecked() as usize);
+            let layout = slice_layout::<BitSliceType>(self.len_unchecked());
             alloc::dealloc(self.ptr.cast::<u8>().as_ptr(), layout);
         }
     }
@@ -294,7 +292,7 @@ fn slice_layout<T>(len: usize) -> Layout {
         panic!("overflow error in SmolBitSet slice")
     }
 
-    let len: usize = len + 1; // +1 for the length since we store the length in the first element
+    let len = len + 1; // +1 for the length since we store the length in the first element
     let single = Layout::new::<T>().pad_to_align();
     let Some(size) = single.size().checked_mul(len) else {
         #[allow(unreachable_code)]
@@ -715,7 +713,7 @@ impl FromStr for SmolBitSet {
                 _ => unreachable!("Too many digits for inline data"),
             }
         } else {
-            assert!(sbs.len() as usize >= digit_count);
+            assert!(sbs.len() >= digit_count);
 
             let data = unsafe { sbs.as_slice_mut_unchecked() };
             data[0..digit_count].copy_from_slice(&digits);
@@ -734,7 +732,7 @@ impl typesize::TypeSize for SmolBitSet {
             return 0;
         }
 
-        let len = unsafe { self.len_unchecked() as usize } + 1;
+        let len = unsafe { self.len_unchecked() } + 1;
         ELEM_SIZE * len
     }
 }
