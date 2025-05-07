@@ -400,12 +400,23 @@ fn sbs_shr(sbs: &mut SmolBitSet, rhs: usize) {
 }
 
 macro_rules! impl_shifts {
-    ($($t:ty),+) => {$(
+    ($($t:ty),+) => {
+        impl_shifts!(false, $($t),*);
+    };
+    (@signed $($t:ty),+) => {
+        impl_shifts!(true, $($t),*);
+    };
+    ($signed:literal, $($t:ty),+) => {$(
         impl Shl<$t> for SmolBitSet {
             type Output = Self;
 
             #[inline]
             fn shl(mut self, rhs: $t) -> Self {
+                #[allow(unused_comparisons)]
+                if $signed && rhs < 0 {
+                    panic!("Cannot shift left by a negative amount");
+                }
+
                 sbs_shl(&mut self, rhs as usize);
                 self
             }
@@ -414,6 +425,11 @@ macro_rules! impl_shifts {
         impl ShlAssign<$t> for SmolBitSet {
             #[inline]
             fn shl_assign(&mut self, rhs: $t) {
+                #[allow(unused_comparisons)]
+                if $signed && rhs < 0 {
+                    panic!("Cannot shift left by a negative amount");
+                }
+
                 sbs_shl(self, rhs as usize);
             }
         }
@@ -423,6 +439,11 @@ macro_rules! impl_shifts {
 
             #[inline]
             fn shr(mut self, rhs: $t) -> Self {
+                #[allow(unused_comparisons)]
+                if $signed && rhs < 0 {
+                    panic!("Cannot shift right by a negative amount");
+                }
+
                 sbs_shr(&mut self, rhs as usize);
                 self
             }
@@ -431,6 +452,11 @@ macro_rules! impl_shifts {
         impl ShrAssign<$t> for SmolBitSet {
             #[inline]
             fn shr_assign(&mut self, rhs: $t) {
+                #[allow(unused_comparisons)]
+                if $signed && rhs < 0 {
+                    panic!("Cannot shift right by a negative amount");
+                }
+
                 sbs_shr(self, rhs as usize);
             }
         }
@@ -469,10 +495,11 @@ macro_rules! impl_shifts {
                 self.shr_assign(*rhs)
             }
         }
-    }
+    };
 }
 
 impl_shifts!(u8, u16, u32, u64, usize);
+impl_shifts!(@signed i8, i16, i32, i64, isize);
 
 impl Not for SmolBitSet {
     type Output = Self;
