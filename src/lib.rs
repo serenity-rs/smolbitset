@@ -10,7 +10,7 @@ use {
     core::convert::Infallible,
     core::iter,
     core::mem::MaybeUninit,
-    core::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign},
+    core::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not},
     core::ops::{Shl, ShlAssign, Shr, ShrAssign},
     core::ptr::{self, NonNull},
     core::slice,
@@ -26,7 +26,7 @@ use {
     std::convert::Infallible,
     std::iter,
     std::mem::MaybeUninit,
-    std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign},
+    std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not},
     std::ops::{Shl, ShlAssign, Shr, ShrAssign},
     std::ptr::{self, NonNull},
     std::slice,
@@ -37,6 +37,15 @@ use {
 type BitSliceType = u32;
 const BST_BITS: usize = BitSliceType::BITS as usize;
 const INLINE_SLICE_PARTS: usize = usize::BITS as usize / BST_BITS;
+
+/// Returns the index of the most significant bit set to 1 in the given data.
+///
+/// Note: the least significant bit is at index 1!
+macro_rules! highest_set_bit {
+    ($t:ty, $val:expr) => {
+        (<$t>::BITS - $val.leading_zeros()) as usize
+    };
+}
 
 #[repr(transparent)]
 pub struct SmolBitSet {
@@ -68,7 +77,7 @@ impl SmolBitSet {
     }
 
     #[inline]
-    fn len(&self) -> BitSliceType {
+    fn len(&self) -> usize {
         if self.is_inline() {
             return 0;
         }
@@ -77,8 +86,8 @@ impl SmolBitSet {
     }
 
     #[inline]
-    const unsafe fn len_unchecked(&self) -> BitSliceType {
-        unsafe { *self.ptr.as_ptr() }
+    const unsafe fn len_unchecked(&self) -> usize {
+        unsafe { *self.ptr.as_ptr() as usize }
     }
 
     #[inline]
@@ -97,7 +106,7 @@ impl SmolBitSet {
 
     #[inline]
     const unsafe fn as_slice_unchecked(&self) -> &[BitSliceType] {
-        unsafe { slice::from_raw_parts(self.data_ptr_unchecked(), self.len_unchecked() as usize) }
+        unsafe { slice::from_raw_parts(self.data_ptr_unchecked(), self.len_unchecked()) }
     }
 
     #[inline]
@@ -111,9 +120,7 @@ impl SmolBitSet {
 
     #[inline]
     const unsafe fn as_slice_mut_unchecked(&mut self) -> &mut [BitSliceType] {
-        unsafe {
-            slice::from_raw_parts_mut(self.data_ptr_unchecked(), self.len_unchecked() as usize)
-        }
+        unsafe { slice::from_raw_parts_mut(self.data_ptr_unchecked(), self.len_unchecked()) }
     }
 
     #[inline]
@@ -167,7 +174,7 @@ impl SmolBitSet {
             return;
         }
 
-        let len = unsafe { self.len_unchecked() } as usize;
+        let len = unsafe { self.len_unchecked() };
         if highest_bit < (BST_BITS * len) {
             return;
         }
@@ -207,12 +214,12 @@ impl SmolBitSet {
     fn highest_set_bit(&self) -> usize {
         if self.is_inline() {
             let data = unsafe { self.get_inline_data_unchecked() };
-            return highest_set_bit_usize(data);
+            return highest_set_bit!(usize, data);
         }
 
         let data = unsafe { self.as_slice_unchecked() };
         for (idx, &data) in data.iter().enumerate().rev() {
-            let h = highest_set_bit(data);
+            let h = highest_set_bit!(BitSliceType, data);
             if h != 0 {
                 return (idx * BST_BITS) + h;
             }
@@ -230,7 +237,7 @@ impl Drop for SmolBitSet {
         }
 
         unsafe {
-            let layout = slice_layout::<BitSliceType>(self.len_unchecked() as usize);
+            let layout = slice_layout::<BitSliceType>(self.len_unchecked());
             alloc::dealloc(self.ptr.cast::<u8>().as_ptr(), layout);
         }
     }
@@ -285,7 +292,7 @@ fn slice_layout<T>(len: usize) -> Layout {
         panic!("overflow error in SmolBitSet slice")
     }
 
-    let len: usize = len + 1; // +1 for the length since we store the length in the first element
+    let len = len + 1; // +1 for the length since we store the length in the first element
     let single = Layout::new::<T>().pad_to_align();
     let Some(size) = single.size().checked_mul(len) else {
         #[allow(unreachable_code)]
@@ -298,22 +305,6 @@ fn slice_layout<T>(len: usize) -> Layout {
     };
 
     layout
-}
-
-/// Returns the index of the most significant bit set to 1 in the given data.
-///
-/// Note: the least significant bit is at index 1!
-#[inline]
-const fn highest_set_bit(data: BitSliceType) -> usize {
-    (BitSliceType::BITS - data.leading_zeros()) as usize
-}
-
-/// Returns the index of the most significant bit set to 1 in the given data.
-///
-/// Note: the least significant bit is at index 1!
-#[inline]
-const fn highest_set_bit_usize(data: usize) -> usize {
-    (usize::BITS - data.leading_zeros()) as usize
 }
 
 fn sbs_shl(sbs: &mut SmolBitSet, rhs: usize) {
@@ -409,12 +400,23 @@ fn sbs_shr(sbs: &mut SmolBitSet, rhs: usize) {
 }
 
 macro_rules! impl_shifts {
-    ($($t:ty),+) => {$(
+    ($($t:ty),+) => {
+        impl_shifts!(false, $($t),*);
+    };
+    (@signed $($t:ty),+) => {
+        impl_shifts!(true, $($t),*);
+    };
+    ($signed:literal, $($t:ty),+) => {$(
         impl Shl<$t> for SmolBitSet {
             type Output = Self;
 
             #[inline]
             fn shl(mut self, rhs: $t) -> Self {
+                #[allow(unused_comparisons)]
+                if $signed && rhs < 0 {
+                    panic!("Cannot shift left by a negative amount");
+                }
+
                 sbs_shl(&mut self, rhs as usize);
                 self
             }
@@ -423,6 +425,11 @@ macro_rules! impl_shifts {
         impl ShlAssign<$t> for SmolBitSet {
             #[inline]
             fn shl_assign(&mut self, rhs: $t) {
+                #[allow(unused_comparisons)]
+                if $signed && rhs < 0 {
+                    panic!("Cannot shift left by a negative amount");
+                }
+
                 sbs_shl(self, rhs as usize);
             }
         }
@@ -432,6 +439,11 @@ macro_rules! impl_shifts {
 
             #[inline]
             fn shr(mut self, rhs: $t) -> Self {
+                #[allow(unused_comparisons)]
+                if $signed && rhs < 0 {
+                    panic!("Cannot shift right by a negative amount");
+                }
+
                 sbs_shr(&mut self, rhs as usize);
                 self
             }
@@ -440,6 +452,11 @@ macro_rules! impl_shifts {
         impl ShrAssign<$t> for SmolBitSet {
             #[inline]
             fn shr_assign(&mut self, rhs: $t) {
+                #[allow(unused_comparisons)]
+                if $signed && rhs < 0 {
+                    panic!("Cannot shift right by a negative amount");
+                }
+
                 sbs_shr(self, rhs as usize);
             }
         }
@@ -478,10 +495,38 @@ macro_rules! impl_shifts {
                 self.shr_assign(*rhs)
             }
         }
-    }
+    };
 }
 
 impl_shifts!(u8, u16, u32, u64, usize);
+impl_shifts!(@signed i8, i16, i32, i64, isize);
+
+impl Not for SmolBitSet {
+    type Output = Self;
+
+    fn not(mut self) -> Self {
+        if self.is_inline() {
+            unsafe {
+                self.write_inline_data_unchecked(!self.get_inline_data_unchecked());
+            }
+        } else {
+            let data = unsafe { self.as_slice_mut_unchecked() };
+            for d in data.iter_mut() {
+                *d = !*d;
+            }
+        }
+
+        self
+    }
+}
+
+impl Not for &SmolBitSet {
+    type Output = SmolBitSet;
+
+    fn not(self) -> Self::Output {
+        !self.clone()
+    }
+}
 
 macro_rules! impl_bitop {
     ($($OP:ident :: $op:ident, $OPA:ident :: $opa:ident),+) => {$(
@@ -622,7 +667,7 @@ macro_rules! impl_from {
             fn from(value: $t) -> Self {
                 let mut sbs = SmolBitSet::new();
                 let value = value as usize;
-                sbs.ensure_capacity(highest_set_bit_usize(value));
+                sbs.ensure_capacity(highest_set_bit!(usize, value));
 
                 if sbs.is_inline() {
                     unsafe { sbs.write_inline_data_unchecked(value) };
@@ -695,7 +740,7 @@ impl FromStr for SmolBitSet {
                 _ => unreachable!("Too many digits for inline data"),
             }
         } else {
-            assert!(sbs.len() as usize >= digit_count);
+            assert!(sbs.len() >= digit_count);
 
             let data = unsafe { sbs.as_slice_mut_unchecked() };
             data[0..digit_count].copy_from_slice(&digits);
@@ -714,7 +759,7 @@ impl typesize::TypeSize for SmolBitSet {
             return 0;
         }
 
-        let len = unsafe { self.len_unchecked() as usize } + 1;
+        let len = unsafe { self.len_unchecked() } + 1;
         ELEM_SIZE * len
     }
 }
@@ -727,26 +772,23 @@ mod tests {
 
     #[test]
     fn check_highest_set_bit() {
-        let t = 0;
-        assert_eq!(highest_set_bit_usize(t), 0);
+        let mut t: u64 = 0;
+        assert_eq!(highest_set_bit!(u64, t), 0);
 
-        let t = 1;
-        assert_eq!(highest_set_bit_usize(t), 1);
+        t = 1;
+        assert_eq!(highest_set_bit!(u64, t), 1);
 
-        let t = 1 << 3;
-        assert_eq!(highest_set_bit_usize(t), 4);
+        t = 1 << 3;
+        assert_eq!(highest_set_bit!(u64, t), 4);
 
-        let t = 1 << 31;
-        assert_eq!(highest_set_bit_usize(t), 32);
+        t = 1 << 31;
+        assert_eq!(highest_set_bit!(u64, t), 32);
 
-        let t = 0b10101;
-        assert_eq!(highest_set_bit_usize(t), 5);
+        t = 0b10101;
+        assert_eq!(highest_set_bit!(u64, t), 5);
 
-        let t = 1 << 22;
-        assert_eq!(highest_set_bit(t), 23);
-
-        let t = u64::MAX;
-        assert_eq!(highest_set_bit_usize(t as usize), 64);
+        t = u64::MAX;
+        assert_eq!(highest_set_bit!(u64, t), 64);
     }
 
     #[test]
@@ -875,6 +917,18 @@ mod tests {
         sbs <<= 64u8;
         sbs |= 0xEE00_BEEF_0000_A5A5u64;
         assert_eq!(sbs.to_string(), "220179738009501684669546686565819917733");
+    }
+
+    #[test]
+    fn not() {
+        let sbs = SmolBitSet::new();
+        assert_eq!(
+            unsafe { (!sbs).get_inline_data_unchecked() },
+            usize::MAX >> 1
+        );
+
+        let sbs = SmolBitSet::from(0xC5C5_BEEF_0000_1234u64);
+        assert_eq!((!sbs).as_slice(), [!0x0000_1234, !0xC5C5_BEEF]);
     }
 
     mod from {
