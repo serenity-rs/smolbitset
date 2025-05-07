@@ -10,7 +10,7 @@ use {
     core::convert::Infallible,
     core::iter,
     core::mem::MaybeUninit,
-    core::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign},
+    core::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not},
     core::ops::{Shl, ShlAssign, Shr, ShrAssign},
     core::ptr::{self, NonNull},
     core::slice,
@@ -26,7 +26,7 @@ use {
     std::convert::Infallible,
     std::iter,
     std::mem::MaybeUninit,
-    std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign},
+    std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not},
     std::ops::{Shl, ShlAssign, Shr, ShrAssign},
     std::ptr::{self, NonNull},
     std::slice,
@@ -483,6 +483,33 @@ macro_rules! impl_shifts {
 
 impl_shifts!(u8, u16, u32, u64, usize);
 
+impl Not for SmolBitSet {
+    type Output = Self;
+
+    fn not(mut self) -> Self {
+        if self.is_inline() {
+            unsafe {
+                self.write_inline_data_unchecked(!self.get_inline_data_unchecked());
+            }
+        } else {
+            let data = unsafe { self.as_slice_mut_unchecked() };
+            for d in data.iter_mut() {
+                *d = !*d;
+            }
+        }
+
+        self
+    }
+}
+
+impl Not for &SmolBitSet {
+    type Output = SmolBitSet;
+
+    fn not(self) -> Self::Output {
+        !self.clone()
+    }
+}
+
 macro_rules! impl_bitop {
     ($($OP:ident :: $op:ident, $OPA:ident :: $opa:ident),+) => {$(
         impl $OP<Self> for SmolBitSet {
@@ -875,6 +902,18 @@ mod tests {
         sbs <<= 64u8;
         sbs |= 0xEE00_BEEF_0000_A5A5u64;
         assert_eq!(sbs.to_string(), "220179738009501684669546686565819917733");
+    }
+
+    #[test]
+    fn not() {
+        let sbs = SmolBitSet::new();
+        assert_eq!(
+            unsafe { (!sbs).get_inline_data_unchecked() },
+            usize::MAX >> 1
+        );
+
+        let sbs = SmolBitSet::from(0xC5C5_BEEF_0000_1234u64);
+        assert_eq!((!sbs).as_slice(), [!0x0000_1234, !0xC5C5_BEEF]);
     }
 
     mod from {
