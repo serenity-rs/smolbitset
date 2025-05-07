@@ -38,6 +38,15 @@ type BitSliceType = u32;
 const BST_BITS: usize = BitSliceType::BITS as usize;
 const INLINE_SLICE_PARTS: usize = usize::BITS as usize / BST_BITS;
 
+/// Returns the index of the most significant bit set to 1 in the given data.
+///
+/// Note: the least significant bit is at index 1!
+macro_rules! highest_set_bit {
+    ($t:ty, $val:expr) => {
+        (<$t>::BITS - $val.leading_zeros()) as usize
+    };
+}
+
 #[repr(transparent)]
 pub struct SmolBitSet {
     ptr: NonNull<BitSliceType>,
@@ -207,12 +216,12 @@ impl SmolBitSet {
     fn highest_set_bit(&self) -> usize {
         if self.is_inline() {
             let data = unsafe { self.get_inline_data_unchecked() };
-            return highest_set_bit_usize(data);
+            return highest_set_bit!(usize, data);
         }
 
         let data = unsafe { self.as_slice_unchecked() };
         for (idx, &data) in data.iter().enumerate().rev() {
-            let h = highest_set_bit(data);
+            let h = highest_set_bit!(BitSliceType, data);
             if h != 0 {
                 return (idx * BST_BITS) + h;
             }
@@ -298,22 +307,6 @@ fn slice_layout<T>(len: usize) -> Layout {
     };
 
     layout
-}
-
-/// Returns the index of the most significant bit set to 1 in the given data.
-///
-/// Note: the least significant bit is at index 1!
-#[inline]
-const fn highest_set_bit(data: BitSliceType) -> usize {
-    (BitSliceType::BITS - data.leading_zeros()) as usize
-}
-
-/// Returns the index of the most significant bit set to 1 in the given data.
-///
-/// Note: the least significant bit is at index 1!
-#[inline]
-const fn highest_set_bit_usize(data: usize) -> usize {
-    (usize::BITS - data.leading_zeros()) as usize
 }
 
 fn sbs_shl(sbs: &mut SmolBitSet, rhs: usize) {
@@ -649,7 +642,7 @@ macro_rules! impl_from {
             fn from(value: $t) -> Self {
                 let mut sbs = SmolBitSet::new();
                 let value = value as usize;
-                sbs.ensure_capacity(highest_set_bit_usize(value));
+                sbs.ensure_capacity(highest_set_bit!(usize, value));
 
                 if sbs.is_inline() {
                     unsafe { sbs.write_inline_data_unchecked(value) };
@@ -754,26 +747,23 @@ mod tests {
 
     #[test]
     fn check_highest_set_bit() {
-        let t = 0;
-        assert_eq!(highest_set_bit_usize(t), 0);
+        let mut t: u64 = 0;
+        assert_eq!(highest_set_bit!(u64, t), 0);
 
-        let t = 1;
-        assert_eq!(highest_set_bit_usize(t), 1);
+        t = 1;
+        assert_eq!(highest_set_bit!(u64, t), 1);
 
-        let t = 1 << 3;
-        assert_eq!(highest_set_bit_usize(t), 4);
+        t = 1 << 3;
+        assert_eq!(highest_set_bit!(u64, t), 4);
 
-        let t = 1 << 31;
-        assert_eq!(highest_set_bit_usize(t), 32);
+        t = 1 << 31;
+        assert_eq!(highest_set_bit!(u64, t), 32);
 
-        let t = 0b10101;
-        assert_eq!(highest_set_bit_usize(t), 5);
+        t = 0b10101;
+        assert_eq!(highest_set_bit!(u64, t), 5);
 
-        let t = 1 << 22;
-        assert_eq!(highest_set_bit(t), 23);
-
-        let t = u64::MAX;
-        assert_eq!(highest_set_bit_usize(t as usize), 64);
+        t = u64::MAX;
+        assert_eq!(highest_set_bit!(u64, t), 64);
     }
 
     #[test]
