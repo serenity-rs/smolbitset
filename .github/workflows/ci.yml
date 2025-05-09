@@ -79,7 +79,11 @@ jobs:
         run: |
           MIRIFLAGS="--error-format=json" cargo miri nextest run --target ${{ matrix.target }} -j num-cpus \
           --success-output immediate --failure-output immediate --final-status-level all --no-fail-fast 2>&1 \
-          | tee miri.log && miri-sarif -i miri.log \
+          | tee miri.log
+      - name: Convert miri log to SARIF
+        if: always()
+        run: |
+          miri-sarif -i miri.log \
           | jq '(.runs[] | select(.tool.driver.name == "miri")).tool.driver.name |= "miri [${{ matrix.endianness }}]"' \
           | tee results.sarif | sarif-fmt
       - name: Upload SARIF file
