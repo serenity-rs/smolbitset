@@ -697,6 +697,58 @@ macro_rules! impl_from {
 
 impl_from!(u8, u16, u32, u64, usize);
 
+impl cmp::PartialEq for SmolBitSet {
+    fn eq(&self, other: &Self) -> bool {
+        match (self.len(), other.len()) {
+            (0, 0) => unsafe {
+                self.get_inline_data_unchecked() == other.get_inline_data_unchecked()
+            },
+            (a, b) if a == b => {
+                let a = unsafe { self.as_slice_unchecked() };
+                let b = unsafe { other.as_slice_unchecked() };
+
+                a == b
+            }
+            _ => false,
+        }
+    }
+}
+
+impl cmp::Eq for SmolBitSet {}
+
+impl cmp::PartialOrd for SmolBitSet {
+    fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl cmp::Ord for SmolBitSet {
+    fn cmp(&self, other: &Self) -> cmp::Ordering {
+        match (self.len(), other.len()) {
+            (0, 0) => unsafe {
+                self.get_inline_data_unchecked()
+                    .cmp(&other.get_inline_data_unchecked())
+            },
+            (0, _) => cmp::Ordering::Less,
+            (_, 0) => cmp::Ordering::Greater,
+            (a, b) if a == b => unsafe {
+                let a = self.as_slice_unchecked();
+                let b = other.as_slice_unchecked();
+
+                for (a, b) in a.iter().zip(b.iter()).rev() {
+                    let cmp = a.cmp(b);
+                    if cmp != cmp::Ordering::Equal {
+                        return cmp;
+                    }
+                }
+
+                cmp::Ordering::Equal
+            },
+            (a, b) => a.cmp(&b),
+        }
+    }
+}
+
 impl fmt::Display for SmolBitSet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.is_inline() {
@@ -1317,6 +1369,37 @@ mod tests {
                 bitand, 0x0ABC_EE00_1337_BEEFu64, 0xF00D_BEEF_0420_BEEFu64,
                 bitxor, 0x0ABC_EE00_1337_BEEFu64, 0xF00D_BEEF_0420_BEEFu64
             }
+        }
+    }
+
+    mod cmp {
+        use super::*;
+
+        #[test]
+        fn eq() {
+            let mut a = SmolBitSet::from(u16::MAX);
+            let mut b = SmolBitSet::from(0xFFFFu16);
+            assert_eq!(a, b);
+
+            a <<= 55;
+            assert_ne!(a, b);
+
+            b <<= 55;
+            assert_eq!(a, b);
+        }
+
+        #[test]
+        fn ord() {
+            let mut a = SmolBitSet::from(0xBEEFu16);
+            let mut b = SmolBitSet::from(0x00C5_F00Du32);
+            assert!(a < b);
+
+            a <<= 72;
+            assert!(a > b);
+            assert!(b < a);
+
+            b <<= 72;
+            assert!(a < b);
         }
     }
 }
