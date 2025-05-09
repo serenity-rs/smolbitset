@@ -70,8 +70,27 @@ jobs:
           targets: ${{ matrix.target }}
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
+      - name: Install sarif-fmt, miri-sarif & nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: sarif-fmt,miri-sarif,nextest
       - name: Run miri
-        run: MIRIFLAGS=-Zmiri-strict-provenance cargo miri test --target ${{ matrix.target }}
+        shell: bash # this is needed for bash to run with -o pipefail
+        run: |
+          MIRIFLAGS="--error-format=json" cargo miri nextest run --target ${{ matrix.target }} -j num-cpus \
+          --success-output immediate --failure-output immediate --final-status-level all --no-fail-fast 2>&1 \
+          | tee miri.log
+      - name: Convert miri log to SARIF
+        if: always()
+        run: |
+          miri-sarif -i miri.log \
+          | jq '(.runs[] | select(.tool.driver.name == "miri")).tool.driver.name |= "miri [${{ matrix.endianness }}]"' \
+          | tee results.sarif | sarif-fmt
+      - name: Upload SARIF file
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: results.sarif
 
   tests:
     name: Tests
