@@ -766,6 +766,19 @@ impl hash::Hash for SmolBitSet {
     }
 }
 
+impl fmt::Debug for SmolBitSet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let data = if self.is_inline() {
+            let d = unsafe { self.get_inline_data_unchecked() };
+            &[d as BitSliceType, (d >> BST_BITS) as BitSliceType]
+        } else {
+            unsafe { self.as_slice_unchecked() }
+        };
+
+        f.debug_list().entries(data).finish()
+    }
+}
+
 impl fmt::Display for SmolBitSet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.is_inline() {
@@ -774,6 +787,31 @@ impl fmt::Display for SmolBitSet {
 
         let tmp = num_bigint::BigUint::from_slice(unsafe { self.as_slice_unchecked() });
         write!(f, "{tmp}")
+    }
+}
+
+impl fmt::Binary for SmolBitSet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.is_inline() {
+            return fmt::Binary::fmt(&unsafe { self.get_inline_data_unchecked() }, f);
+        }
+
+        let data = unsafe { self.as_slice_unchecked() };
+        let highest = self.highest_set_bit().saturating_sub(1).div_ceil(BST_BITS);
+
+        let mut full_width = false;
+        for idx in (0..highest).rev() {
+            let d = data[idx];
+
+            if full_width {
+                write!(f, "{d:0BST_BITS$b}")?;
+            } else {
+                full_width = true;
+                fmt::Binary::fmt(&d, f)?;
+            }
+        }
+
+        Ok(())
     }
 }
 
