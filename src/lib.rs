@@ -8,6 +8,7 @@ use extern_alloc::string::ToString;
 #[cfg(not(feature = "std"))]
 use {
     core::convert::Infallible,
+    core::hash,
     core::iter,
     core::mem::MaybeUninit,
     core::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not},
@@ -24,6 +25,7 @@ use {
 use {
     std::alloc::{self, Layout, handle_alloc_error},
     std::convert::Infallible,
+    std::hash,
     std::iter,
     std::mem::MaybeUninit,
     std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not},
@@ -697,6 +699,86 @@ macro_rules! impl_from {
 
 impl_from!(u8, u16, u32, u64, usize);
 
+impl cmp::PartialEq for SmolBitSet {
+    fn eq(&self, other: &Self) -> bool {
+        match (self.len(), other.len()) {
+            (0, 0) => unsafe {
+                self.get_inline_data_unchecked() == other.get_inline_data_unchecked()
+            },
+            (a, b) if a == b => {
+                let a = unsafe { self.as_slice_unchecked() };
+                let b = unsafe { other.as_slice_unchecked() };
+
+                a == b
+            }
+            _ => false,
+        }
+    }
+}
+
+impl cmp::Eq for SmolBitSet {}
+
+impl cmp::PartialOrd for SmolBitSet {
+    fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl cmp::Ord for SmolBitSet {
+    fn cmp(&self, other: &Self) -> cmp::Ordering {
+        match (self.len(), other.len()) {
+            (0, 0) => unsafe {
+                self.get_inline_data_unchecked()
+                    .cmp(&other.get_inline_data_unchecked())
+            },
+            (0, _) => cmp::Ordering::Less,
+            (_, 0) => cmp::Ordering::Greater,
+            (a, b) if a == b => unsafe {
+                let a = self.as_slice_unchecked();
+                let b = other.as_slice_unchecked();
+
+                for (a, b) in a.iter().zip(b.iter()).rev() {
+                    let cmp = a.cmp(b);
+                    if cmp != cmp::Ordering::Equal {
+                        return cmp;
+                    }
+                }
+
+                cmp::Ordering::Equal
+            },
+            (a, b) => a.cmp(&b),
+        }
+    }
+}
+
+impl hash::Hash for SmolBitSet {
+    fn hash<H: hash::Hasher>(&self, state: &mut H) {
+        if self.is_inline() {
+            unsafe { self.get_inline_data_unchecked() }.hash(state);
+            return;
+        }
+
+        let hb = self.highest_set_bit();
+        let data = unsafe { self.as_slice_unchecked() };
+        for d in data.iter().take(hb.div_ceil(BST_BITS)) {
+            d.hash(state);
+        }
+    }
+}
+
+impl fmt::Debug for SmolBitSet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let data = if self.is_inline() {
+            let d = unsafe { self.get_inline_data_unchecked() };
+            &[d as BitSliceType, (d >> BST_BITS) as BitSliceType]
+        } else {
+            unsafe { self.as_slice_unchecked() }
+        };
+
+        f.debug_list().entries(data).finish()
+    }
+}
+
 impl fmt::Display for SmolBitSet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.is_inline() {
@@ -705,6 +787,31 @@ impl fmt::Display for SmolBitSet {
 
         let tmp = num_bigint::BigUint::from_slice(unsafe { self.as_slice_unchecked() });
         write!(f, "{tmp}")
+    }
+}
+
+impl fmt::Binary for SmolBitSet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.is_inline() {
+            return fmt::Binary::fmt(&unsafe { self.get_inline_data_unchecked() }, f);
+        }
+
+        let data = unsafe { self.as_slice_unchecked() };
+        let highest = self.highest_set_bit().saturating_sub(1).div_ceil(BST_BITS);
+
+        let mut full_width = false;
+        for idx in (0..highest).rev() {
+            let d = data[idx];
+
+            if full_width {
+                write!(f, "{d:0BST_BITS$b}")?;
+            } else {
+                full_width = true;
+                fmt::Binary::fmt(&d, f)?;
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -929,6 +1036,32 @@ mod tests {
 
         let sbs = SmolBitSet::from(0xC5C5_BEEF_0000_1234u64);
         assert_eq!((!sbs).as_slice(), [!0x0000_1234, !0xC5C5_BEEF]);
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn hash() {
+        // core does not have a default hasher
+        use hash::{DefaultHasher, Hash, Hasher};
+
+        let a = SmolBitSet::from(0xC5C5_F00Du32);
+        let b = SmolBitSet::from(0xC5C5_F00Du32);
+        let mut hasher_a = DefaultHasher::new();
+        let mut hasher_b = DefaultHasher::new();
+        a.hash(&mut hasher_a);
+        b.hash(&mut hasher_b);
+        assert_eq!(hasher_a.finish(), hasher_b.finish());
+
+        let mut a = SmolBitSet::from(0xFFC5_C0FF_EE00_BEEF_u64);
+        let mut b = SmolBitSet::from(0xFFC5_C0FF_EE00_BEEF_u64);
+        a <<= 128u8;
+        a >>= 66u8;
+        b <<= 128u8 - 66u8;
+        let mut hasher_a = DefaultHasher::new();
+        let mut hasher_b = DefaultHasher::new();
+        a.hash(&mut hasher_a);
+        b.hash(&mut hasher_b);
+        assert_eq!(hasher_a.finish(), hasher_b.finish());
     }
 
     mod from {
@@ -1317,6 +1450,37 @@ mod tests {
                 bitand, 0x0ABC_EE00_1337_BEEFu64, 0xF00D_BEEF_0420_BEEFu64,
                 bitxor, 0x0ABC_EE00_1337_BEEFu64, 0xF00D_BEEF_0420_BEEFu64
             }
+        }
+    }
+
+    mod cmp {
+        use super::*;
+
+        #[test]
+        fn eq() {
+            let mut a = SmolBitSet::from(u16::MAX);
+            let mut b = SmolBitSet::from(0xFFFFu16);
+            assert_eq!(a, b);
+
+            a <<= 55;
+            assert_ne!(a, b);
+
+            b <<= 55;
+            assert_eq!(a, b);
+        }
+
+        #[test]
+        fn ord() {
+            let mut a = SmolBitSet::from(0xBEEFu16);
+            let mut b = SmolBitSet::from(0x00C5_F00Du32);
+            assert!(a < b);
+
+            a <<= 72;
+            assert!(a > b);
+            assert!(b < a);
+
+            b <<= 72;
+            assert!(a < b);
         }
     }
 }
