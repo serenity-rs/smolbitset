@@ -204,7 +204,7 @@ impl SmolBitSet {
 
         unsafe {
             // initializing newly allocated memory to zero
-            // slice::from_raw_parts_mut(new_ptr.add(1 + len), new_len - len).fill(0);
+            slice::from_raw_parts_mut(new_ptr.add(1 + len), new_len - len).fill(0);
 
             // update the new length in the first element
             *new_ptr = new_len as BitSliceType;
