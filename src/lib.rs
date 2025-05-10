@@ -3,45 +3,23 @@
 
 #[cfg(not(feature = "std"))]
 extern crate alloc as extern_alloc;
-#[cfg(all(not(feature = "std"), test))]
-use extern_alloc::string::ToString;
 #[cfg(not(feature = "std"))]
 use {
-    core::convert::Infallible,
     core::hash,
-    core::iter,
-    core::mem::MaybeUninit,
-    core::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not},
-    core::ops::{Shl, ShlAssign, Shr, ShrAssign},
-    core::ptr::{self, NonNull},
     core::slice,
-    core::str::FromStr,
-    core::{cmp, fmt},
     extern_alloc::alloc::{self, Layout, handle_alloc_error},
-    extern_alloc::string::String,
 };
 
 #[cfg(feature = "std")]
 use {
     std::alloc::{self, Layout, handle_alloc_error},
-    std::convert::Infallible,
     std::hash,
-    std::iter,
-    std::mem::MaybeUninit,
-    std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not},
-    std::ops::{Shl, ShlAssign, Shr, ShrAssign},
-    std::ptr::{self, NonNull},
     std::slice,
-    std::str::FromStr,
-    std::{cmp, fmt},
 };
 
-#[cfg(feature = "serde")]
-mod serde;
-
-type BitSliceType = u32;
-const BST_BITS: usize = BitSliceType::BITS as usize;
-const INLINE_SLICE_PARTS: usize = usize::BITS as usize / BST_BITS;
+use core::convert::Infallible;
+use core::mem::MaybeUninit;
+use core::ptr::{self, NonNull};
 
 /// Returns the index of the most significant bit set to 1 in the given data.
 ///
@@ -51,6 +29,19 @@ macro_rules! highest_set_bit {
         (<$t>::BITS - $val.leading_zeros()) as usize
     };
 }
+
+mod bitop;
+mod cmp;
+mod fmt;
+mod from;
+mod shifts;
+
+#[cfg(feature = "serde")]
+mod serde;
+
+type BitSliceType = u32;
+const BST_BITS: usize = BitSliceType::BITS as usize;
+const INLINE_SLICE_PARTS: usize = usize::BITS as usize / BST_BITS;
 
 #[repr(transparent)]
 pub struct SmolBitSet {
@@ -141,7 +132,7 @@ impl SmolBitSet {
 
     unsafe fn do_spill(&mut self, highest_bit: usize) {
         let len = highest_bit.div_ceil(BST_BITS);
-        let len = cmp::max(len, INLINE_SLICE_PARTS);
+        let len = core::cmp::max(len, INLINE_SLICE_PARTS);
 
         let layout = slice_layout::<BitSliceType>(len);
         let ptr = unsafe {
@@ -312,448 +303,6 @@ fn slice_layout<T>(len: usize) -> Layout {
     layout
 }
 
-fn sbs_shl(sbs: &mut SmolBitSet, rhs: usize) {
-    if rhs == 0 {
-        return;
-    }
-
-    let hb: usize = sbs.highest_set_bit();
-    sbs.ensure_capacity(hb + rhs);
-
-    if sbs.is_inline() {
-        unsafe {
-            sbs.write_inline_data_unchecked(
-                sbs.get_inline_data_unchecked()
-                    .checked_shl(rhs as u32)
-                    .unwrap_or(0),
-            );
-        }
-    } else {
-        let data = unsafe { sbs.as_slice_mut_unchecked() };
-
-        // shifting further than one slice member?
-        let offset = rhs / BST_BITS;
-        if offset > 0 {
-            for i in (0..data.len()).rev() {
-                data[i] = if let Some(src_idx) = i.checked_sub(offset) {
-                    data[src_idx]
-                } else {
-                    0
-                };
-            }
-        }
-
-        let shift = rhs % BST_BITS;
-        if shift == 0 {
-            // offset shifting was enough
-            return;
-        }
-
-        let carry_shift = BST_BITS - shift;
-        let mut carry = 0;
-        for d in data.iter_mut() {
-            let new = (*d << shift) | carry;
-            carry = *d >> carry_shift;
-            *d = new;
-        }
-    }
-}
-
-fn sbs_shr(sbs: &mut SmolBitSet, rhs: usize) {
-    if rhs == 0 {
-        return;
-    }
-
-    if sbs.is_inline() {
-        unsafe {
-            sbs.write_inline_data_unchecked(
-                sbs.get_inline_data_unchecked()
-                    .checked_shr(rhs as u32)
-                    .unwrap_or(0),
-            );
-        }
-    } else {
-        let data = unsafe { sbs.as_slice_mut_unchecked() };
-
-        // shifting further than one slice member?
-        let offset = rhs / BST_BITS;
-        if offset > 0 {
-            let len = data.len();
-            for i in 0..len {
-                data[i] = if (i + offset) < len {
-                    data[i + offset]
-                } else {
-                    0
-                };
-            }
-        }
-
-        let shift = rhs % BST_BITS;
-        if shift == 0 {
-            // offset shifting was enough
-            return;
-        }
-
-        let carry_shift = BST_BITS - shift;
-        let mut carry = 0;
-        for d in data.iter_mut().rev() {
-            let new = (*d >> shift) | carry;
-            carry = *d << carry_shift;
-            *d = new;
-        }
-    }
-}
-
-macro_rules! impl_shifts {
-    ($($t:ty),+) => {
-        impl_shifts!(false, $($t),*);
-    };
-    (@signed $($t:ty),+) => {
-        impl_shifts!(true, $($t),*);
-    };
-    ($signed:literal, $($t:ty),+) => {$(
-        impl Shl<$t> for SmolBitSet {
-            type Output = Self;
-
-            #[inline]
-            fn shl(mut self, rhs: $t) -> Self {
-                #[allow(unused_comparisons)]
-                if $signed && rhs < 0 {
-                    panic!("Cannot shift left by a negative amount");
-                }
-
-                sbs_shl(&mut self, rhs as usize);
-                self
-            }
-        }
-
-        impl ShlAssign<$t> for SmolBitSet {
-            #[inline]
-            fn shl_assign(&mut self, rhs: $t) {
-                #[allow(unused_comparisons)]
-                if $signed && rhs < 0 {
-                    panic!("Cannot shift left by a negative amount");
-                }
-
-                sbs_shl(self, rhs as usize);
-            }
-        }
-
-        impl Shr<$t> for SmolBitSet {
-            type Output = Self;
-
-            #[inline]
-            fn shr(mut self, rhs: $t) -> Self {
-                #[allow(unused_comparisons)]
-                if $signed && rhs < 0 {
-                    panic!("Cannot shift right by a negative amount");
-                }
-
-                sbs_shr(&mut self, rhs as usize);
-                self
-            }
-        }
-
-        impl ShrAssign<$t> for SmolBitSet {
-            #[inline]
-            fn shr_assign(&mut self, rhs: $t) {
-                #[allow(unused_comparisons)]
-                if $signed && rhs < 0 {
-                    panic!("Cannot shift right by a negative amount");
-                }
-
-                sbs_shr(self, rhs as usize);
-            }
-        }
-
-        impl_shifts!(@ref $t);
-    )*};
-    (@ref $t:ty) => {
-        impl Shl<&$t> for SmolBitSet {
-            type Output = Self;
-
-            #[inline]
-            fn shl(self, rhs: &$t) -> Self {
-                self.shl(*rhs)
-            }
-        }
-
-        impl ShlAssign<&$t> for SmolBitSet {
-            #[inline]
-            fn shl_assign(&mut self, rhs: &$t) {
-                self.shl_assign(*rhs)
-            }
-        }
-
-        impl Shr<&$t> for SmolBitSet {
-            type Output = Self;
-
-            #[inline]
-            fn shr(self, rhs: &$t) -> Self {
-                self.shr(*rhs)
-            }
-        }
-
-        impl ShrAssign<&$t> for SmolBitSet {
-            #[inline]
-            fn shr_assign(&mut self, rhs: &$t) {
-                self.shr_assign(*rhs)
-            }
-        }
-    };
-}
-
-impl_shifts!(u8, u16, u32, u64, usize);
-impl_shifts!(@signed i8, i16, i32, i64, isize);
-
-impl Not for SmolBitSet {
-    type Output = Self;
-
-    fn not(mut self) -> Self {
-        if self.is_inline() {
-            unsafe {
-                self.write_inline_data_unchecked(!self.get_inline_data_unchecked());
-            }
-        } else {
-            let data = unsafe { self.as_slice_mut_unchecked() };
-            for d in data.iter_mut() {
-                *d = !*d;
-            }
-        }
-
-        self
-    }
-}
-
-impl Not for &SmolBitSet {
-    type Output = SmolBitSet;
-
-    fn not(self) -> Self::Output {
-        !self.clone()
-    }
-}
-
-macro_rules! impl_bitop {
-    ($($OP:ident :: $op:ident, $OPA:ident :: $opa:ident),+) => {$(
-        impl $OP<Self> for SmolBitSet {
-            type Output = Self;
-
-            #[inline]
-            fn $op(self, rhs: Self) -> Self {
-                let mut lhs = self;
-                lhs.$opa(rhs);
-                lhs
-            }
-        }
-
-        impl $OPA<Self> for SmolBitSet {
-            #[inline]
-            fn $opa(&mut self, rhs: Self) {
-                self.$opa(&rhs);
-            }
-        }
-
-        impl_bitop!(@ref $OP :: $op, $OPA :: $opa);
-    )*};
-    (@ref $OP:ident :: $op:ident, $OPA:ident :: $opa:ident) => {
-        impl $OP<&Self> for SmolBitSet {
-            type Output = Self;
-
-            #[inline]
-            fn $op(self, rhs: &Self) -> Self {
-                let mut lhs = self;
-                lhs.$opa(rhs);
-                lhs
-            }
-        }
-
-        impl $OPA<&Self> for SmolBitSet {
-            fn $opa(&mut self, rhs: &Self) {
-                match (self.is_inline(), rhs.is_inline()) {
-                    (true, true) => unsafe {
-                        let lhs = self.get_inline_data_unchecked();
-                        let rhs = rhs.get_inline_data_unchecked();
-                        self.write_inline_data_unchecked(lhs.$op(rhs));
-                    },
-                    (_, false) => {
-                        let rhs_hb = rhs.highest_set_bit();
-                        if rhs_hb > self.highest_set_bit() {
-                            self.ensure_capacity(rhs_hb);
-                        }
-
-                        let lhs = unsafe { self.as_slice_mut_unchecked() };
-                        let rhs = unsafe { rhs.as_slice_unchecked() };
-
-                        assert!(lhs.len() >= rhs.len());
-
-                        // in case lhs > rhs we need to have extra elements
-                        let rhs_iter = rhs.iter().chain(iter::repeat(&0));
-
-                        for (lhs, rhs) in lhs.iter_mut().zip(rhs_iter) {
-                            (*lhs).$opa(*rhs);
-                        }
-                    }
-                    (false, true) => {
-                        let lhs = unsafe { self.as_slice_mut_unchecked() };
-                        let rhs = unsafe { rhs.get_inline_data_unchecked() };
-
-                        lhs.iter_mut()
-                            .enumerate()
-                            .take(INLINE_SLICE_PARTS)
-                            .for_each(|(idx, lhs)| {
-                                (*lhs).$opa((rhs >> (idx * BST_BITS)) as BitSliceType);
-                            });
-                    }
-                }
-            }
-        }
-    };
-}
-
-impl_bitop! {
-    BitOr::bitor, BitOrAssign::bitor_assign,
-    BitAnd::bitand, BitAndAssign::bitand_assign,
-    BitXor::bitxor, BitXorAssign::bitxor_assign
-}
-
-macro_rules! impl_binop_prim {
-    ($($OP:ident :: $op:ident, $OPA:ident :: $opa:ident, $t:ty),+) => {$(
-        impl $OP<$t> for SmolBitSet {
-            type Output = Self;
-
-            #[inline]
-            fn $op(self, rhs: $t) -> Self {
-                let mut lhs = self;
-                lhs.$opa(rhs);
-                lhs
-            }
-        }
-
-        impl $OPA<$t> for SmolBitSet {
-            #[inline]
-            fn $opa(&mut self, rhs: $t) {
-                self.$opa(Self::from(rhs))
-            }
-        }
-
-        impl_binop_prim!(@ref $OP :: $op, $OPA :: $opa, $t);
-    )*};
-    (@ref $OP:ident :: $op:ident, $OPA:ident :: $opa:ident, $t:ty) => {
-        impl $OP<&$t> for SmolBitSet {
-            type Output = Self;
-
-            #[inline]
-            fn $op(self, rhs: &$t) -> Self {
-                self.$op(*rhs)
-            }
-        }
-
-        impl $OPA<&$t> for SmolBitSet {
-            #[inline]
-            fn $opa(&mut self, rhs: &$t) {
-                self.$opa(*rhs)
-            }
-        }
-    };
-    ($($t:ty),+) => {$(
-        impl_binop_prim!{
-            BitOr::bitor, BitOrAssign::bitor_assign, $t,
-            BitAnd::bitand, BitAndAssign::bitand_assign, $t,
-            BitXor::bitxor, BitXorAssign::bitxor_assign, $t
-        }
-    )*};
-}
-
-impl_binop_prim!(u8, u16, u32, u64, u128, usize);
-
-macro_rules! impl_from {
-    ($($t:ty),+) => {$(
-        impl From<$t> for SmolBitSet {
-            fn from(value: $t) -> Self {
-                let mut sbs = SmolBitSet::new();
-                let value = value as usize;
-                sbs.ensure_capacity(highest_set_bit!(usize, value));
-
-                if sbs.is_inline() {
-                    unsafe { sbs.write_inline_data_unchecked(value) };
-                } else {
-                    let data = unsafe { sbs.as_slice_mut_unchecked() };
-                    assert_eq!(data.len(), 2);
-
-                    data[0] = value as BitSliceType;
-                    data[1] = (value >> BST_BITS) as BitSliceType;
-                }
-
-                sbs
-            }
-        }
-
-        impl_from!(@ref $t);
-    )*};
-    (@ref $t:ty) => {
-        impl From<&$t> for SmolBitSet {
-            #[inline]
-            fn from(value: &$t) -> Self {
-                Self::from(*value)
-            }
-        }
-    }
-}
-
-impl_from!(u8, u16, u32, u64, u128, usize);
-
-impl cmp::PartialEq for SmolBitSet {
-    fn eq(&self, other: &Self) -> bool {
-        match (self.len(), other.len()) {
-            (0, 0) => unsafe {
-                self.get_inline_data_unchecked() == other.get_inline_data_unchecked()
-            },
-            (a, b) if a == b => {
-                let a = unsafe { self.as_slice_unchecked() };
-                let b = unsafe { other.as_slice_unchecked() };
-
-                a == b
-            }
-            _ => false,
-        }
-    }
-}
-
-impl cmp::Eq for SmolBitSet {}
-
-impl cmp::PartialOrd for SmolBitSet {
-    fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl cmp::Ord for SmolBitSet {
-    fn cmp(&self, other: &Self) -> cmp::Ordering {
-        match (self.len(), other.len()) {
-            (0, 0) => unsafe {
-                self.get_inline_data_unchecked()
-                    .cmp(&other.get_inline_data_unchecked())
-            },
-            (0, _) => cmp::Ordering::Less,
-            (_, 0) => cmp::Ordering::Greater,
-            (a, b) if a == b => unsafe {
-                let a = self.as_slice_unchecked();
-                let b = other.as_slice_unchecked();
-
-                for (a, b) in a.iter().zip(b.iter()).rev() {
-                    let cmp = a.cmp(b);
-                    if cmp != cmp::Ordering::Equal {
-                        return cmp;
-                    }
-                }
-
-                cmp::Ordering::Equal
-            },
-            (a, b) => a.cmp(&b),
-        }
-    }
-}
-
 impl hash::Hash for SmolBitSet {
     fn hash<H: hash::Hasher>(&self, state: &mut H) {
         if self.is_inline() {
@@ -766,97 +315,6 @@ impl hash::Hash for SmolBitSet {
         for d in data.iter().take(hb.div_ceil(BST_BITS)) {
             d.hash(state);
         }
-    }
-}
-
-impl fmt::Debug for SmolBitSet {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let data = if self.is_inline() {
-            let d = unsafe { self.get_inline_data_unchecked() };
-            &[d as BitSliceType, (d >> BST_BITS) as BitSliceType]
-        } else {
-            unsafe { self.as_slice_unchecked() }
-        };
-
-        f.debug_list().entries(data).finish()
-    }
-}
-
-impl fmt::Display for SmolBitSet {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.is_inline() {
-            return write!(f, "{}", unsafe { self.get_inline_data_unchecked() });
-        }
-
-        let tmp = num_bigint::BigUint::from_slice(unsafe { self.as_slice_unchecked() });
-        write!(f, "{tmp}")
-    }
-}
-
-impl fmt::Binary for SmolBitSet {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.is_inline() {
-            return fmt::Binary::fmt(&unsafe { self.get_inline_data_unchecked() }, f);
-        }
-
-        let data = unsafe { self.as_slice_unchecked() };
-        let highest = self.highest_set_bit().saturating_sub(1).div_ceil(BST_BITS);
-
-        let mut full_width = false;
-        for idx in (0..highest).rev() {
-            let d = data[idx];
-
-            if full_width {
-                write!(f, "{d:0BST_BITS$b}")?;
-            } else {
-                full_width = true;
-                fmt::Binary::fmt(&d, f)?;
-            }
-        }
-
-        Ok(())
-    }
-}
-
-impl TryFrom<String> for SmolBitSet {
-    type Error = ();
-
-    #[inline]
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::from_str(value.as_str())
-    }
-}
-
-impl FromStr for SmolBitSet {
-    type Err = ();
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let tmp = num_bigint::BigUint::from_str(s).map_err(|_| ())?;
-
-        let mut sbs = Self::new();
-        sbs.ensure_capacity(tmp.bits() as usize);
-
-        let digits = tmp.to_u32_digits();
-        let digit_count = digits.len();
-        if sbs.is_inline() {
-            match digit_count {
-                0 => {}
-                1 => unsafe { sbs.write_inline_data_unchecked(digits[0] as usize) },
-                2 => unsafe {
-                    sbs.write_inline_data_unchecked(
-                        (digits[0] as usize) | ((digits[1] as usize) << u32::BITS),
-                    );
-                },
-                _ => unreachable!("Too many digits for inline data"),
-            }
-        } else {
-            assert!(sbs.len() >= digit_count);
-
-            let data = unsafe { sbs.as_slice_mut_unchecked() };
-            data[0..digit_count].copy_from_slice(&digits);
-        }
-
-        Ok(sbs)
     }
 }
 
@@ -879,6 +337,9 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+
+    #[cfg(not(feature = "std"))]
+    use extern_alloc::string::{String, ToString};
 
     #[test]
     fn check_highest_set_bit() {
@@ -1027,18 +488,6 @@ mod tests {
         sbs <<= 64u8;
         sbs |= 0xEE00_BEEF_0000_A5A5u64;
         assert_eq!(sbs.to_string(), "220179738009501684669546686565819917733");
-    }
-
-    #[test]
-    fn not() {
-        let sbs = SmolBitSet::new();
-        assert_eq!(
-            unsafe { (!sbs).get_inline_data_unchecked() },
-            usize::MAX >> 1
-        );
-
-        let sbs = SmolBitSet::from(0xC5C5_BEEF_0000_1234u64);
-        assert_eq!((!sbs).as_slice(), [!0x0000_1234, !0xC5C5_BEEF]);
     }
 
     #[test]
@@ -1290,6 +739,8 @@ mod tests {
 
     mod binops {
         use super::*;
+
+        use core::ops::{BitAnd, BitOr, BitXor};
 
         mod inline {
             use super::*;
