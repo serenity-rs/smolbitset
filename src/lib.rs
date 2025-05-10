@@ -36,6 +36,9 @@ use {
     std::{cmp, fmt},
 };
 
+#[cfg(feature = "serde")]
+mod serde;
+
 type BitSliceType = u32;
 const BST_BITS: usize = BitSliceType::BITS as usize;
 const INLINE_SLICE_PARTS: usize = usize::BITS as usize / BST_BITS;
@@ -661,7 +664,7 @@ macro_rules! impl_binop_prim {
     )*};
 }
 
-impl_binop_prim!(u8, u16, u32, u64, usize);
+impl_binop_prim!(u8, u16, u32, u64, u128, usize);
 
 macro_rules! impl_from {
     ($($t:ty),+) => {$(
@@ -697,7 +700,7 @@ macro_rules! impl_from {
     }
 }
 
-impl_from!(u8, u16, u32, u64, usize);
+impl_from!(u8, u16, u32, u64, u128, usize);
 
 impl cmp::PartialEq for SmolBitSet {
     fn eq(&self, other: &Self) -> bool {
