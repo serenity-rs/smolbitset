@@ -239,6 +239,9 @@ impl Drop for SmolBitSet {
     }
 }
 
+unsafe impl Send for SmolBitSet {}
+unsafe impl Sync for SmolBitSet {}
+
 impl Default for SmolBitSet {
     #[inline]
     fn default() -> Self {
@@ -340,6 +343,18 @@ mod tests {
 
     #[cfg(not(feature = "std"))]
     use extern_alloc::string::{String, ToString};
+
+    #[test]
+    fn send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<SmolBitSet>();
+    }
+
+    #[test]
+    fn sync() {
+        fn assert_sync<T: Sync>() {}
+        assert_sync::<SmolBitSet>();
+    }
 
     #[test]
     fn check_highest_set_bit() {
