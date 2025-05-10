@@ -108,3 +108,18 @@ jobs:
         run: |
           cargo test --no-fail-fast
           cargo test --no-fail-fast --no-default-features
+
+  msrv:
+    name: MSRV
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+      - name: Install cargo-msrv
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-msrv
+      - name: Check MSRV
+        run: cargo msrv verify
