@@ -1,3 +1,10 @@
+//! A library for dynamically sized bitsets with small storage optimization.
+//!
+//! All values up to `usize::MAX >> 1` are stored without incurring any heap allocations.\
+//! Any larger values dynamically allocate an appropriately sized `u32` slice on the heap.\
+//! [`SmolBitSet`] also has a niche optimization so [`Option<SmolBitSet>`] and [`SmolBitSet`] have the same size of 1 [`usize`].
+
+#![doc(html_root_url = "https://docs.rs/smolbitset/*")]
 #![allow(dead_code)]
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -23,7 +30,7 @@ use core::ptr::{self, NonNull};
 
 /// Returns the index of the most significant bit set to 1 in the given data.
 ///
-/// Note: the least significant bit is at index 1!
+/// The least significant bit is at index 1!
 macro_rules! highest_set_bit {
     ($t:ty, $val:expr) => {
         (<$t>::BITS - $val.leading_zeros()) as usize
@@ -49,11 +56,93 @@ pub struct SmolBitSet {
 }
 
 impl SmolBitSet {
+    /// Creates a new empty [`SmolBitSet`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use smolbitset::SmolBitSet;
+    ///
+    /// # #[allow(unused_mut)]
+    /// let mut sbs = SmolBitSet::new();
+    /// ```
     #[must_use]
     #[inline]
     pub const fn new() -> Self {
         let ptr = unsafe { NonNull::new_unchecked(ptr::without_provenance_mut(0b1)) };
+
+        // #![feature(nonnull_provenance)] -> https://github.com/rust-lang/rust/issues/135243
+        // let ptr = NonNull::without_provenance(core::num::NonZero::<usize>::MIN);
+
         Self { ptr }
+    }
+
+    /// Creates a new [`SmolBitSet`] from the provided `val` without any heap allocation.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the most significant bit in `val` is set to 1.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use smolbitset::SmolBitSet;
+    ///
+    /// const sbs: SmolBitSet = SmolBitSet::new_small(1234);
+    /// assert_eq!(sbs, SmolBitSet::from(1234u16));
+    /// ```
+    #[must_use]
+    pub const fn new_small(val: usize) -> Self {
+        assert!(val.leading_zeros() >= 1, "the highest bit in val must be 0");
+
+        let mut res = Self::new();
+        unsafe {
+            res.write_inline_data_unchecked(val);
+        }
+
+        res
+    }
+
+    /// Creates a new [`SmolBitSet`] from the provided slice of `bits`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use smolbitset::SmolBitSet;
+    ///
+    /// let sbs = SmolBitSet::from_bits(&[0, 4, 3, 6]);
+    /// assert_eq!(sbs, SmolBitSet::from(0b0101_1001u8));
+    /// # let sbs = SmolBitSet::from_bits(&[63]);
+    /// # assert_eq!(sbs, SmolBitSet::from(1u64 << 63));
+    /// ```
+    #[must_use]
+    pub fn from_bits(bits: &[usize]) -> Self {
+        let Some(hb) = bits.iter().copied().max() else {
+            return Self::new();
+        };
+
+        let mut res = Self::new();
+        res.ensure_capacity(hb + 1);
+
+        if res.is_inline() {
+            let mut data = 0;
+
+            for &bit in bits {
+                data |= 1 << bit;
+            }
+
+            unsafe { res.write_inline_data_unchecked(data) }
+        } else {
+            let data = unsafe { res.as_slice_mut_unchecked() };
+
+            for &bit in bits {
+                let s = bit % BST_BITS;
+                let b = bit / BST_BITS;
+                data[b] |= 1 << s;
+            }
+        }
+
+        res
     }
 
     #[inline]
@@ -119,6 +208,8 @@ impl SmolBitSet {
         unsafe { slice::from_raw_parts_mut(self.data_ptr_unchecked(), self.len_unchecked()) }
     }
 
+    /// # Warning
+    /// `highest_bit` is 1 indexed, so the least significant bit is 1, not 0!
     #[inline]
     fn spill(&mut self, highest_bit: usize) {
         if !self.is_inline() {
@@ -130,6 +221,8 @@ impl SmolBitSet {
         }
     }
 
+    /// # Warning
+    /// `highest_bit` is 1 indexed, so the least significant bit is 1, not 0!
     unsafe fn do_spill(&mut self, highest_bit: usize) {
         let len = highest_bit.div_ceil(BST_BITS);
         let len = core::cmp::max(len, INLINE_SLICE_PARTS);
@@ -160,6 +253,8 @@ impl SmolBitSet {
         self.ptr = unsafe { NonNull::new_unchecked(ptr.cast()) };
     }
 
+    /// # Warning
+    /// `highest_bit` is 1 indexed, so the least significant bit is 1, not 0!
     #[inline]
     fn ensure_capacity(&mut self, highest_bit: usize) {
         if self.is_inline() {
@@ -180,6 +275,8 @@ impl SmolBitSet {
         }
     }
 
+    /// # Warning
+    /// `highest_bit` is 1 indexed, so the least significant bit is 1, not 0!
     unsafe fn do_grow(&mut self, len: usize, highest_bit: usize) {
         // we need to grow our slice allocation
         let new_len = highest_bit.div_ceil(BST_BITS);
@@ -206,6 +303,9 @@ impl SmolBitSet {
         self.ptr = unsafe { NonNull::new_unchecked(new_ptr) };
     }
 
+    /// Returns the index of the most significant bit set to 1.
+    ///
+    /// The least significant bit is at index 1!
     #[inline]
     fn highest_set_bit(&self) -> usize {
         if self.is_inline() {
