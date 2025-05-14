@@ -53,7 +53,53 @@ impl SmolBitSet {
     #[inline]
     pub const fn new() -> Self {
         let ptr = unsafe { NonNull::new_unchecked(ptr::without_provenance_mut(0b1)) };
+
+        // #![feature(nonnull_provenance)] -> https://github.com/rust-lang/rust/issues/135243
+        // let ptr = NonNull::without_provenance(core::num::NonZero::<usize>::MIN);
+
         Self { ptr }
+    }
+
+    #[must_use]
+    pub const fn new_small(val: usize) -> Self {
+        assert!(val.leading_zeros() >= 1, "the highest bit in val must be 0");
+
+        let mut res = Self::new();
+        unsafe {
+            res.write_inline_data_unchecked(val);
+        }
+
+        res
+    }
+
+    #[must_use]
+    pub fn from_bits(bits: &[usize]) -> Self {
+        let Some(hb) = bits.iter().copied().max() else {
+            return Self::new();
+        };
+
+        let mut res = Self::new();
+        res.ensure_capacity(hb + 1);
+
+        if res.is_inline() {
+            let mut data = 0;
+
+            for &bit in bits {
+                data |= 1 << bit;
+            }
+
+            unsafe { res.write_inline_data_unchecked(data) }
+        } else {
+            let data = unsafe { res.as_slice_mut_unchecked() };
+
+            for &bit in bits {
+                let s = bit % BST_BITS;
+                let b = bit / BST_BITS;
+                data[b] |= 1 << s;
+            }
+        }
+
+        res
     }
 
     #[inline]
