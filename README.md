@@ -2,11 +2,11 @@
 
 # smolbitset
 
-A library for dynamically sized bitsets with small storage optimization.
+A library for dynamically sized bitsets with optimizations for memory usage.
 
-All values up to `usize::MAX >> 1` are stored without incurring any heap allocations.\
+The first <code>usize::BITS - 1</code> bits are stored without incurring any heap allocations.\
 Any larger values dynamically allocate an appropriately sized `u32` slice on the heap.\
-`SmolBitSet` also has a niche optimization so `Option<SmolBitSet>` and `SmolBitSet` have the same size of 1 `usize`.
+Furthermore `SmolBitSet` has a niche optimization so `Option<SmolBitSet>` has the same size of 1 [`usize`].
 
 [ci]: https://github.com/serenity-rs/smolbitset/actions
 [ci-badge]: https://img.shields.io/github/actions/workflow/status/serenity-rs/smolbitset/ci.yml?branch=main&style=flat-square
