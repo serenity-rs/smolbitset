@@ -1,8 +1,31 @@
-//! A library for dynamically sized bitsets with small storage optimization.
+//! A library for dynamically sized bitsets with memory usage optimizations.
 //!
-//! All values up to `usize::MAX >> 1` are stored without incurring any heap allocations.\
-//! Any larger values dynamically allocate an appropriately sized `u32` slice on the heap.\
-//! [`SmolBitSet`] also has a niche optimization so [`Option<SmolBitSet>`] and [`SmolBitSet`] have the same size of 1 [`usize`].
+//! The first <code>[usize::BITS] - 1</code> bits are stored without incurring any heap allocations.\
+//! Any larger values dynamically allocate an appropriately sized [`u32`] slice on the heap.\
+//! Furthermore [`SmolBitSet`] has a niche optimization so [`Option<SmolBitSet>`] has the same size of 1 [`usize`].
+//!
+//! # Example
+//!
+//! ```
+//! use smolbitset::SmolBitSet;
+//!
+//! let mut sbs = SmolBitSet::new();
+//!
+//! sbs |= 1u32 << 5;
+//! sbs >>= 5u8;
+//! assert_eq!(sbs, SmolBitSet::from(1u64));
+//!
+//! sbs |= !1u64;
+//! assert_eq!(sbs, SmolBitSet::from(u64::MAX));
+//!
+//! sbs <<= 64u16;
+//! assert_eq!(sbs, SmolBitSet::from_bits(&(64..128).collect::<Box<[_]>>()))
+//! ```
+//!
+//! # Minimum Supported Rust Version
+//!
+//! This is currently `1.89`, and is considered a breaking change to increase.
+//!
 
 #![doc(html_root_url = "https://docs.rs/smolbitset/*")]
 #![allow(dead_code)]
@@ -51,20 +74,21 @@ type BitSliceType = u32;
 const BST_BITS: usize = BitSliceType::BITS as usize;
 const INLINE_SLICE_PARTS: usize = usize::BITS as usize / BST_BITS;
 
+/// A dynamically sized bitset with memory usage optimizations.
+///
+/// The first <code>[usize::BITS] - 1</code> bits are stored without incurring any heap allocations.
 #[repr(transparent)]
 pub struct SmolBitSet {
     ptr: NonNull<BitSliceType>,
 }
 
 impl SmolBitSet {
-    /// Creates a new empty [`SmolBitSet`].
+    /// Constructs a new, empty [`SmolBitSet`].
     ///
     /// # Examples
     ///
     /// ```
-    /// use smolbitset::SmolBitSet;
-    ///
-    /// # #[allow(unused_mut)]
+    /// # use smolbitset::SmolBitSet;
     /// let mut sbs = SmolBitSet::new();
     /// ```
     #[must_use]
@@ -75,23 +99,25 @@ impl SmolBitSet {
         Self { ptr }
     }
 
-    /// Creates a new [`SmolBitSet`] from the provided `val` without any heap allocation.
+    /// Constructs a new [`SmolBitSet`] from the provided `val` without any heap allocations.
     ///
     /// # Panics
     ///
-    /// Panics if the most significant bit in `val` is set to 1.
+    /// Panics if the most significant bit in `val` is 1.
     ///
     /// # Examples
     ///
     /// ```
-    /// use smolbitset::SmolBitSet;
-    ///
+    /// # use smolbitset::SmolBitSet;
     /// const sbs: SmolBitSet = SmolBitSet::new_small(1234);
     /// assert_eq!(sbs, SmolBitSet::from(1234u16));
     /// ```
     #[must_use]
     pub const fn new_small(val: usize) -> Self {
-        assert!(val.leading_zeros() >= 1, "the highest bit in val must be 0");
+        assert!(
+            val.leading_zeros() >= 1,
+            "the highest bit in val must be 0 for a non allocating SmolBitSet"
+        );
 
         let mut res = Self::new();
         unsafe {
@@ -101,19 +127,32 @@ impl SmolBitSet {
         res
     }
 
-    /// Creates a new [`SmolBitSet`] from the provided array of `bits` without any heap allocation.
+    /// Constructs a new [`SmolBitSet`] from the provided array of bit indices without any heap allocations.
     ///
     /// # Panics
     ///
-    /// Panics if any bit index in `bits` is larger than or equal to `usize::BITS`.
+    /// Panics if any bit index in `bits` is larger than or equal to [`usize::BITS`].
     ///
     /// # Examples
     ///
     /// ```
-    /// use smolbitset::SmolBitSet;
-    ///
+    /// # use smolbitset::SmolBitSet;
     /// const sbs: SmolBitSet = SmolBitSet::from_bits_small([0, 4, 1, 6]);
     /// assert_eq!(sbs, SmolBitSet::from(0b0101_0011u8));
+    /// ```
+    ///
+    /// ```should_panic
+    /// # use smolbitset::SmolBitSet;
+    /// // this panics since 63 is outside of the range
+    /// // a SmolBitSet can hold without incurring a heap allocation
+    /// let sbs = SmolBitSet::from_bits_small([63]);
+    /// ```
+    ///
+    /// ```compile_fail
+    /// # use smolbitset::SmolBitSet;
+    /// // this fails to compile since the const evaluation
+    /// // panics for the same reason as above
+    /// const sbs: SmolBitSet = SmolBitSet::from_bits_small([63]);
     /// ```
     #[must_use]
     pub const fn from_bits_small<const N: usize>(bits: [usize; N]) -> Self {
@@ -123,8 +162,8 @@ impl SmolBitSet {
         while i < N {
             let b = bits[i];
             assert!(
-                b < usize::BITS as usize,
-                "bit index out of range for small bitset"
+                b < usize::BITS as usize - 1,
+                "bit index out of range for a non allocating SmolBitSet"
             );
 
             res |= 1 << b;
@@ -134,17 +173,18 @@ impl SmolBitSet {
         Self::new_small(res)
     }
 
-    /// Creates a new [`SmolBitSet`] from the provided slice of `bits`.
+    /// Creates a new [`SmolBitSet`] from the provided slice of bit indices.
     ///
     /// # Examples
     ///
     /// ```
-    /// use smolbitset::SmolBitSet;
-    ///
-    /// let sbs = SmolBitSet::from_bits(&[0, 4, 3, 6]);
+    /// # use smolbitset::SmolBitSet;
+    /// // bit indices can be in any order
+    /// let sbs = SmolBitSet::from_bits(&[0, 6, 4, 3]);
     /// assert_eq!(sbs, SmolBitSet::from(0b0101_1001u8));
-    /// # let sbs = SmolBitSet::from_bits(&[63]);
-    /// # assert_eq!(sbs, SmolBitSet::from(1u64 << 63));
+    ///
+    /// let sbs = SmolBitSet::from_bits(&[63]);
+    /// assert_eq!(sbs, SmolBitSet::from(1u64 << 63));
     /// ```
     #[must_use]
     pub fn from_bits(bits: &[usize]) -> Self {
@@ -336,6 +376,7 @@ impl SmolBitSet {
 
     /// Returns the index of the most significant bit set to 1.
     ///
+    /// # Warning
     /// The least significant bit is at index 1!
     #[inline]
     fn highest_set_bit(&self) -> usize {
