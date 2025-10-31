@@ -103,6 +103,39 @@ impl SmolBitSet {
         res
     }
 
+    /// Creates a new [`SmolBitSet`] from the provided array of `bits` without any heap allocation.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any bit index in `bits` is larger than or equal to `usize::BITS`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use smolbitset::SmolBitSet;
+    ///
+    /// const sbs: SmolBitSet = SmolBitSet::from_bits_small([0, 4, 1, 6]);
+    /// assert_eq!(sbs, SmolBitSet::from(0b0101_0011u8));
+    /// ```
+    #[must_use]
+    pub const fn from_bits_small<const N: usize>(bits: [usize; N]) -> Self {
+        let mut res = 0;
+        let mut i = 0;
+
+        while i < N {
+            let b = bits[i];
+            assert!(
+                b < usize::BITS as usize,
+                "bit index out of range for small bitset"
+            );
+
+            res |= 1 << b;
+            i += 1;
+        }
+
+        Self::new_small(res)
+    }
+
     /// Creates a new [`SmolBitSet`] from the provided slice of `bits`.
     ///
     /// # Examples
