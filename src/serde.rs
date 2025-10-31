@@ -1,5 +1,10 @@
 use crate::SmolBitSet;
-use crate::fmt;
+
+#[cfg(feature = "std")]
+use std::fmt;
+
+#[cfg(not(feature = "std"))]
+use core::fmt;
 
 use serde::de::{Deserialize, Deserializer, Visitor};
 use serde::ser::{Serialize, Serializer};
