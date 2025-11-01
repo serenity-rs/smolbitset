@@ -14,5 +14,5 @@ Any larger values dynamically allocate an appropriately sized `u32` slice on the
 [docs-badge]: https://img.shields.io/badge/docs-online-5023dd.svg?style=flat-square
 [crates.io link]: https://crates.io/crates/smolbitset
 [crates.io version]: https://img.shields.io/crates/v/smolbitset.svg?style=flat-square
-[rust-version-badge]: https://img.shields.io/badge/rust-1.85.0+-93450a.svg?style=flat-square
-[rust-version-link]: https://blog.rust-lang.org/2025/02/20/Rust-1.85.0.html
+[rust-version-badge]: https://img.shields.io/badge/rust-1.89.0+-93450a.svg?style=flat-square
+[rust-version-link]: https://blog.rust-lang.org/2025/08/07/Rust-1.89.0/
