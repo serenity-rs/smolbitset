@@ -26,7 +26,8 @@ use {
 
 use core::convert::Infallible;
 use core::mem::MaybeUninit;
-use core::ptr::{self, NonNull};
+use core::num::NonZero;
+use core::ptr::NonNull;
 
 /// Returns the index of the most significant bit set to 1 in the given data.
 ///
@@ -69,10 +70,7 @@ impl SmolBitSet {
     #[must_use]
     #[inline]
     pub const fn new() -> Self {
-        let ptr = unsafe { NonNull::new_unchecked(ptr::without_provenance_mut(0b1)) };
-
-        // #![feature(nonnull_provenance)] -> https://github.com/rust-lang/rust/issues/135243
-        // let ptr = NonNull::without_provenance(core::num::NonZero::<usize>::MIN);
+        let ptr = NonNull::without_provenance(core::num::NonZero::<usize>::MIN);
 
         Self { ptr }
     }
@@ -190,8 +188,8 @@ impl SmolBitSet {
 
     #[inline]
     const unsafe fn write_inline_data_unchecked(&mut self, data: usize) {
-        self.ptr =
-            unsafe { NonNull::new_unchecked(ptr::without_provenance_mut((data << 1) | 0b1)) };
+        let addr = unsafe { NonZero::new_unchecked((data << 1) | 0b1) };
+        self.ptr = NonNull::without_provenance(addr);
     }
 
     #[inline]
