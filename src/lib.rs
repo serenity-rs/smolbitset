@@ -396,6 +396,22 @@ impl SmolBitSet {
 
         0
     }
+
+    /// Gets the starting bits that could be stored inlined.
+    fn get_inlineable_start(&self) -> usize {
+        if self.is_inline() {
+            let data = unsafe { self.get_inline_data_unchecked() };
+            return data;
+        }
+
+        let data = unsafe { self.as_slice_unchecked() };
+        let mut start = 0usize;
+        for (idx, &chunk) in data.iter().enumerate().take(INLINE_SLICE_PARTS) {
+            start |= (chunk as usize) << (idx * BST_BITS);
+        }
+
+        start & (usize::MAX >> 1)
+    }
 }
 
 impl Drop for SmolBitSet {
@@ -512,10 +528,43 @@ impl typesize::TypeSize for SmolBitSet {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
+    use crate::bst_slice::BstSlice;
+
     use super::*;
 
     #[cfg(not(feature = "std"))]
-    use extern_alloc::string::{String, ToString};
+    use extern_alloc::{
+        string::{String, ToString},
+        vec::Vec,
+    };
+
+    /// Helper extension trait to simplify some tests.
+    trait AndNot {
+        fn and_not(self, rhs: Self) -> Self;
+    }
+
+    impl AndNot for BitSliceType {
+        fn and_not(self, rhs: Self) -> Self {
+            self & !rhs
+        }
+    }
+
+    impl AndNot for usize {
+        fn and_not(self, rhs: Self) -> Self {
+            self & !rhs
+        }
+    }
+
+    fn to_bst_vec(sbs: &SmolBitSet) -> Vec<BitSliceType> {
+        BstSlice::new(sbs).slice().to_vec()
+    }
+
+    fn zero_pad_to(mut vec: Vec<BitSliceType>, len: usize) -> Vec<BitSliceType> {
+        while vec.len() < len {
+            vec.push(0);
+        }
+        vec
+    }
 
     #[test]
     fn send() {
@@ -942,7 +991,7 @@ mod tests {
                         assert!(a.is_inline());
                         assert!(b.is_inline());
 
-                        let res = a.$name(b);
+                        let res = a.$name(&b);
                         assert!(res.is_inline());
 
                         let d = unsafe { res.get_inline_data_unchecked() };
@@ -954,7 +1003,8 @@ mod tests {
             test_inline_binops! {
                 bitor, 0xF0F0u16, 0x0F0Fu16,
                 bitand, 0xFEFEu16, 0xAFFEu16,
-                bitxor, 0x3A52u16, 0xAAE8u16
+                bitxor, 0x3A52u16, 0xAAE8u16,
+                and_not, 0xFEFEu16, 0xAFFEu16
             }
         }
 
@@ -970,7 +1020,7 @@ mod tests {
                         assert_eq!(a.len(), 2);
                         assert_eq!(b.len(), 2);
 
-                        let res = a.$name(b);
+                        let res = a.$name(&b);
                         assert_eq!(res.len(), 2);
                         assert_eq!(
                             res.as_slice(),
@@ -986,7 +1036,8 @@ mod tests {
             test_slice_binops! {
                 bitor, 0xC0FF_EE00_1337_BEEFu64, 0xF00D_BEEF_0420_BEEFu64,
                 bitand, 0xC0FF_EE00_1337_BEEFu64, 0xF00D_BEEF_0420_BEEFu64,
-                bitxor, 0xC0FF_EE00_1337_BEEFu64, 0xF00D_BEEF_0420_BEEFu64
+                bitxor, 0xC0FF_EE00_1337_BEEFu64, 0xF00D_BEEF_0420_BEEFu64,
+                and_not, 0xC0FF_EE00_1337_BEEFu64, 0xF00D_BEEF_0420_BEEFu64
             }
         }
 
@@ -1002,19 +1053,17 @@ mod tests {
                         assert!(a.is_inline());
                         assert_eq!(b.len(), 2);
 
-                        let res1 = a.clone().$name(b.clone());
-                        assert_eq!(res1.len(), 2);
+                        let res1 = a.clone().$name(&b);
                         assert_eq!(
-                            res1.as_slice(),
+                            to_bst_vec(&res1),
                             [
                                 (($a as BitSliceType).$name($b as BitSliceType)),
                                 ((($a >> 32) as BitSliceType).$name(($b >> 32) as BitSliceType))
                             ]
                         );
 
-                        let res2 = b.$name(a);
-                        assert_eq!(res2.len(), 2);
-                        assert_eq!(res2.as_slice(), res1.as_slice());
+                        let res2 = b.$name(&a);
+                        assert_eq!(res2, res1);
                     }
                 )*}
             }
@@ -1023,6 +1072,27 @@ mod tests {
                 bitor, 0x0ABC_EE00_1337_BEEFu64, 0xF00D_BEEF_0420_BEEFu64,
                 bitand, 0x0ABC_EE00_1337_BEEFu64, 0xF00D_BEEF_0420_BEEFu64,
                 bitxor, 0x0ABC_EE00_1337_BEEFu64, 0xF00D_BEEF_0420_BEEFu64
+            }
+
+            // `a.and_not(b) != b.and_not(a)`
+            #[test]
+            fn and_not() {
+                const A: u64 = 0x0ABC_EE00_1337_BEEFu64;
+                const B: u64 = 0xF00D_BEEF_0420_BEEFu64;
+
+                let a = SmolBitSet::from(A);
+                let b = SmolBitSet::from(B);
+                assert!(a.is_inline());
+                assert_eq!(b.len(), 2);
+
+                let res1 = a.clone().and_not(&b);
+                assert_eq!(
+                    to_bst_vec(&res1),
+                    [
+                        ((A as BitSliceType).and_not(B as BitSliceType)),
+                        (((A >> 32) as BitSliceType).and_not((B >> 32) as BitSliceType))
+                    ]
+                );
             }
         }
 
@@ -1039,10 +1109,9 @@ mod tests {
                         let lhs_len = lhs.len();
                         assert!(lhs_len > rhs.len());
 
-                        let res = lhs.$name(rhs);
-                        assert_eq!(res.len(), lhs_len);
+                        let res = lhs.$name(&rhs);
                         assert_eq!(
-                            res.as_slice(),
+                            to_bst_vec(&res),
                             [
                                 ((0 as BitSliceType).$name($b as BitSliceType)),
                                 ((($a) as BitSliceType).$name(($b >> 32) as BitSliceType)),
@@ -1056,7 +1125,8 @@ mod tests {
             test_rhs_smaller_binops! {
                 bitor, 0x0ABC_EE00_1337_BEEFu64, 0xF00D_BEEF_0420_BEEFu64,
                 bitand, 0x0ABC_EE00_1337_BEEFu64, 0xF00D_BEEF_0420_BEEFu64,
-                bitxor, 0x0ABC_EE00_1337_BEEFu64, 0xF00D_BEEF_0420_BEEFu64
+                bitxor, 0x0ABC_EE00_1337_BEEFu64, 0xF00D_BEEF_0420_BEEFu64,
+                and_not, 0x0ABC_EE00_1337_BEEFu64, 0xF00D_BEEF_0420_BEEFu64
             }
         }
 
@@ -1073,10 +1143,9 @@ mod tests {
                         let rhs_len = rhs.len();
                         assert!(rhs_len > lhs.len());
 
-                        let res = lhs.$name(rhs);
-                        assert_eq!(res.len(), rhs_len);
+                        let res = lhs.$name(&rhs);
                         assert_eq!(
-                            res.as_slice(),
+                            zero_pad_to(to_bst_vec(&res), 3),
                             [
                                 (($a as BitSliceType).$name((0 as BitSliceType))),
                                 ((($a >> 32) as BitSliceType).$name($b as BitSliceType)),
@@ -1090,7 +1159,8 @@ mod tests {
             test_rhs_larger_binops! {
                 bitor, 0x0ABC_EE00_1337_BEEFu64, 0xF00D_BEEF_0420_BEEFu64,
                 bitand, 0x0ABC_EE00_1337_BEEFu64, 0xF00D_BEEF_0420_BEEFu64,
-                bitxor, 0x0ABC_EE00_1337_BEEFu64, 0xF00D_BEEF_0420_BEEFu64
+                bitxor, 0x0ABC_EE00_1337_BEEFu64, 0xF00D_BEEF_0420_BEEFu64,
+                and_not, 0x0ABC_EE00_1337_BEEFu64, 0xF00D_BEEF_0420_BEEFu64
             }
         }
     }
