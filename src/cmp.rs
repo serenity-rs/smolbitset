@@ -1,21 +1,24 @@
-use crate::SmolBitSet;
+use crate::bst_slice::BstSlice;
+use crate::{BitSliceType, SmolBitSet};
 
-use core::cmp;
+use core::{cmp, iter};
 
 impl cmp::PartialEq for SmolBitSet {
     fn eq(&self, other: &Self) -> bool {
-        match (self.len(), other.len()) {
-            (0, 0) => unsafe {
-                self.get_inline_data_unchecked() == other.get_inline_data_unchecked()
-            },
-            (a, b) if a == b => {
-                let a = unsafe { self.as_slice_unchecked() };
-                let b = unsafe { other.as_slice_unchecked() };
+        let this = BstSlice::new(self);
+        let other = BstSlice::new(other);
 
-                a == b
-            }
-            _ => false,
-        }
+        let this = this.slice();
+        let other = other.slice();
+
+        let (long, short) = if this.len() >= other.len() {
+            (this, other)
+        } else {
+            (other, this)
+        };
+
+        let (prefix, suffix) = long.split_at(short.len());
+        prefix == short && suffix.iter().all(|&x| x == 0)
     }
 }
 
@@ -29,27 +32,32 @@ impl cmp::PartialOrd for SmolBitSet {
 
 impl cmp::Ord for SmolBitSet {
     fn cmp(&self, other: &Self) -> cmp::Ordering {
-        match (self.len(), other.len()) {
-            (0, 0) => unsafe {
-                self.get_inline_data_unchecked()
-                    .cmp(&other.get_inline_data_unchecked())
-            },
-            (0, _) => cmp::Ordering::Less,
-            (_, 0) => cmp::Ordering::Greater,
-            (a, b) if a == b => unsafe {
-                let a = self.as_slice_unchecked();
-                let b = other.as_slice_unchecked();
+        fn inner(long: &[BitSliceType], short: &[BitSliceType]) -> cmp::Ordering {
+            let (prefix, suffix) = long.split_at(short.len());
+            if suffix.iter().any(|&x| x != 0) {
+                return cmp::Ordering::Greater;
+            }
 
-                for (a, b) in a.iter().zip(b.iter()).rev() {
-                    let cmp = a.cmp(b);
-                    if cmp != cmp::Ordering::Equal {
-                        return cmp;
-                    }
+            for (a, b) in iter::zip(prefix, short).rev() {
+                let cmp = a.cmp(b);
+                if cmp != cmp::Ordering::Equal {
+                    return cmp;
                 }
+            }
 
-                cmp::Ordering::Equal
-            },
-            (a, b) => a.cmp(&b),
+            cmp::Ordering::Equal
+        }
+
+        let this = BstSlice::new(self);
+        let other = BstSlice::new(other);
+
+        let this = this.slice();
+        let other = other.slice();
+
+        if this.len() >= other.len() {
+            inner(this, other)
+        } else {
+            inner(other, this).reverse()
         }
     }
 }

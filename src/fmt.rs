@@ -1,4 +1,5 @@
-use crate::{BST_BITS, BitSliceType, SmolBitSet};
+use crate::bst_slice::BstSlice;
+use crate::{BST_BITS, SmolBitSet};
 
 #[cfg(feature = "std")]
 use std::fmt;
@@ -10,14 +11,7 @@ use fmt::{Binary, Debug, Display, Formatter, LowerHex, Octal, Result, UpperHex};
 
 impl Debug for SmolBitSet {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-        let data = if self.is_inline() {
-            let d = unsafe { self.get_inline_data_unchecked() };
-            &[d as BitSliceType, (d >> BST_BITS) as BitSliceType]
-        } else {
-            unsafe { self.as_slice_unchecked() }
-        };
-
-        f.debug_list().entries(data).finish()
+        f.debug_list().entries(BstSlice::new(self).slice()).finish()
     }
 }
 
