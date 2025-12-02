@@ -15,17 +15,19 @@ impl<'a> BstSlice<'a> {
             let data = [data as BitSliceType];
             #[cfg(target_pointer_width = "64")]
             let data = [(data as BitSliceType), ((data >> BST_BITS) as BitSliceType)];
-            return Self::Inline(data);
+
+            Self::Inline(data)
         } else {
             let slice = unsafe { sbs.as_slice_unchecked() };
-            return Self::Heap(slice);
+
+            Self::Heap(slice)
         }
     }
 
-    pub fn slice(&self) -> &[BitSliceType] {
+    pub const fn slice(&self) -> &[BitSliceType] {
         match self {
             Self::Inline(items) => items,
-            Self::Heap(items) => *items,
+            Self::Heap(items) => items,
         }
     }
 }

@@ -1,5 +1,5 @@
-use crate::{ BitSliceType, SmolBitSet};
 use crate::bst_slice::BstSlice;
+use crate::{BitSliceType, SmolBitSet};
 
 use core::{cmp, iter};
 
