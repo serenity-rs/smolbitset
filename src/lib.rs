@@ -72,6 +72,12 @@ mod shifts;
 mod serde;
 
 type BitSliceType = u32;
+
+// We need to ensure that our pointer is at least 2 byte aligned since we use the LSB
+// as a flag to indicate whether our bitset data is stored inline or on the heap.
+#[repr(align(2))]
+struct RequiredAlignment(BitSliceType);
+
 const BST_BITS: usize = BitSliceType::BITS as usize;
 const INLINE_SLICE_PARTS: usize = usize::BITS as usize / BST_BITS;
 
@@ -299,7 +305,7 @@ impl SmolBitSet {
         let len = highest_bit.div_ceil(BST_BITS);
         let len = core::cmp::max(len, INLINE_SLICE_PARTS);
 
-        let layout = slice_layout::<BitSliceType>(len);
+        let layout = slice_layout(len);
         let ptr = unsafe {
             #[allow(clippy::cast_ptr_alignment)]
             alloc::alloc(layout).cast::<MaybeUninit<BitSliceType>>()
@@ -354,8 +360,8 @@ impl SmolBitSet {
         let new_len = highest_bit.div_ceil(BST_BITS);
         debug_assert!(new_len >= len);
 
-        let layout = slice_layout::<BitSliceType>(len);
-        let new_layout = slice_layout::<BitSliceType>(new_len);
+        let layout = slice_layout(len);
+        let new_layout = slice_layout(new_len);
         let new_ptr = unsafe {
             #[allow(clippy::cast_ptr_alignment)]
             alloc::realloc(self.ptr.cast::<u8>().as_ptr(), layout, new_layout.size())
@@ -422,7 +428,7 @@ impl Drop for SmolBitSet {
         }
 
         unsafe {
-            let layout = slice_layout::<BitSliceType>(self.len_unchecked());
+            let layout = slice_layout(self.len_unchecked());
             alloc::dealloc(self.ptr.cast::<u8>().as_ptr(), layout);
         }
     }
@@ -446,7 +452,7 @@ impl Clone for SmolBitSet {
 
         let src = unsafe { self.as_slice_unchecked() };
         let len = src.len();
-        let layout = slice_layout::<BitSliceType>(len);
+        let layout = slice_layout(len);
         let ptr = unsafe {
             #[allow(clippy::cast_ptr_alignment)]
             alloc::alloc_zeroed(layout).cast::<BitSliceType>()
@@ -467,7 +473,7 @@ impl Clone for SmolBitSet {
 }
 
 #[inline]
-fn slice_layout<T>(len: usize) -> Layout {
+fn slice_layout(len: usize) -> Layout {
     #[cold]
     #[inline(never)]
     fn layout_err() -> Infallible {
@@ -481,7 +487,7 @@ fn slice_layout<T>(len: usize) -> Layout {
     }
 
     let len = len + 1; // +1 for the length since we store the length in the first element
-    let single = Layout::new::<T>().pad_to_align();
+    let single = Layout::new::<RequiredAlignment>().pad_to_align();
     let Some(size) = single.size().checked_mul(len) else {
         #[allow(unreachable_code)]
         match overflow_err() {}
