@@ -11,12 +11,20 @@ use fmt::{Binary, Debug, Display, Formatter, LowerHex, Octal, Result, UpperHex};
 
 impl Debug for SmolBitSet {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        if self.is_sparse() {
+            return Debug::fmt(&self.as_normal(), f);
+        }
+
         f.debug_list().entries(BstSlice::new(self).slice()).finish()
     }
 }
 
 impl Display for SmolBitSet {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        if self.is_sparse() {
+            return Display::fmt(&self.as_normal(), f);
+        }
+
         if self.is_inline() {
             return write!(f, "{}", unsafe { self.get_inline_data_unchecked() });
         }
@@ -30,6 +38,10 @@ macro_rules! impl_format {
     ($($kind:ident $format:literal $variants:literal),+) => {$(
         impl $kind for SmolBitSet {
             fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+                if self.is_sparse() {
+                    return $kind::fmt(&self.as_normal(), f);
+                }
+
                 if self.is_inline() {
                     return $kind::fmt(&unsafe { self.get_inline_data_unchecked() }, f);
                 }
