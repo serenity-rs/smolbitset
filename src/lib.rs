@@ -73,11 +73,10 @@ mod serde;
 
 type BitSliceType = u32;
 
-// We need to ensure that our pointer is at least 2 byte aligned since we use the LSB
-// as a flag to indicate whether our bitset data is stored inline or on the heap.
-#[repr(align(2))]
-struct RequiredAlignment(BitSliceType);
-
+/// How many bits are used for other purposes in the pointer which also determines
+/// the required alignment since we use the least significant bits for this header information.
+/// Bit 0: inline(1) / heap(0) flag
+const HEADER_SIZE: u32 = 1;
 const BST_BITS: usize = BitSliceType::BITS as usize;
 const INLINE_SLICE_PARTS: usize = usize::BITS as usize / BST_BITS;
 
@@ -122,7 +121,7 @@ impl SmolBitSet {
     #[must_use]
     pub const fn new_small(val: usize) -> Self {
         assert!(
-            val.leading_zeros() >= 1,
+            val.leading_zeros() >= HEADER_SIZE,
             "the highest bit in val must be 0 for a non allocating SmolBitSet"
         );
 
@@ -169,7 +168,7 @@ impl SmolBitSet {
         while i < N {
             let b = bits[i];
             assert!(
-                b < usize::BITS as usize - 1,
+                b < (usize::BITS - HEADER_SIZE) as usize,
                 "bit index out of range for a non allocating SmolBitSet"
             );
 
@@ -230,12 +229,12 @@ impl SmolBitSet {
 
     #[inline]
     unsafe fn get_inline_data_unchecked(&self) -> usize {
-        self.ptr.addr().get() >> 1
+        self.ptr.addr().get() >> HEADER_SIZE
     }
 
     #[inline]
     const unsafe fn write_inline_data_unchecked(&mut self, data: usize) {
-        let addr = unsafe { NonZero::new_unchecked((data << 1) | 0b1) };
+        let addr = unsafe { NonZero::new_unchecked((data << HEADER_SIZE) | 0b1) };
         self.ptr = NonNull::without_provenance(addr);
     }
 
@@ -336,7 +335,7 @@ impl SmolBitSet {
     #[inline]
     fn ensure_capacity(&mut self, highest_bit: usize) {
         if self.is_inline() {
-            if highest_bit >= (usize::BITS as usize) {
+            if highest_bit > (usize::BITS - HEADER_SIZE) as usize {
                 unsafe { self.do_spill(highest_bit) }
             }
 
@@ -416,7 +415,7 @@ impl SmolBitSet {
             start |= (chunk as usize) << (idx * BST_BITS);
         }
 
-        start & (usize::MAX >> 1)
+        start & (usize::MAX >> HEADER_SIZE)
     }
 }
 
@@ -486,14 +485,19 @@ fn slice_layout(len: usize) -> Layout {
         panic!("overflow error in SmolBitSet slice")
     }
 
+    const BST_SIZE: usize = size_of::<BitSliceType>();
+    const BST_ALIGN: usize = align_of::<BitSliceType>();
+    const HEADER_ALIGN: usize = 2usize.pow(HEADER_SIZE);
+    const REQUIRED_ALIGN: usize = [BST_ALIGN, HEADER_ALIGN][(BST_ALIGN < HEADER_ALIGN) as usize];
+    // core::cmp::max is not const yet :/
+
     let len = len + 1; // +1 for the length since we store the length in the first element
-    let single = Layout::new::<RequiredAlignment>().pad_to_align();
-    let Some(size) = single.size().checked_mul(len) else {
+    let Some(size) = BST_SIZE.checked_mul(len) else {
         #[allow(unreachable_code)]
         match overflow_err() {}
     };
 
-    let Ok(layout) = Layout::from_size_align(size, single.align()) else {
+    let Ok(layout) = Layout::from_size_align(size, REQUIRED_ALIGN) else {
         #[allow(unreachable_code)]
         match layout_err() {}
     };
@@ -616,10 +620,11 @@ mod tests {
         t.ensure_capacity(32);
         assert!(t.is_inline());
 
-        t.ensure_capacity(63);
+        let max_inline = (usize::BITS - HEADER_SIZE) as usize;
+        t.ensure_capacity(max_inline);
         assert!(t.is_inline());
 
-        t.ensure_capacity(64);
+        t.ensure_capacity(max_inline + 1);
         assert!(!t.is_inline());
         assert_eq!(t.len(), 2);
 
@@ -782,7 +787,7 @@ mod tests {
             u16_max, u16::MAX,
             u32, 0xF0BA_B0BBu32,
             u32_max, u32::MAX,
-            u64, 0x7550_1337_0000_F00Fu64
+            u64, 0x3550_1337_0000_F00Fu64
         }
 
         #[test]
