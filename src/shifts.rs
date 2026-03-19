@@ -195,3 +195,141 @@ macro_rules! impl_shifts {
 
 impl_shifts!(u8, u16, u32, u64, usize);
 impl_shifts!(@signed i8, i16, i32, i64, isize);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod shl {
+        use super::*;
+
+        #[test]
+        fn inline() {
+            let val = 0xABCD_0042u32;
+            let mut a = SmolBitSet::from(val);
+            assert!(a.is_inline());
+
+            a <<= 6u8;
+            assert!(a.is_inline());
+            assert_eq!(
+                unsafe { a.get_inline_data_unchecked() },
+                (val as usize) << 6
+            );
+
+            let b = a << 4u8;
+            assert!(b.is_inline());
+            assert_eq!(
+                unsafe { b.get_inline_data_unchecked() },
+                (val as usize) << (6 + 4)
+            );
+        }
+
+        #[test]
+        fn grow_to_slice() {
+            let val = 0x00AB_CD55_1337_BEEFu64;
+            let mut a = SmolBitSet::from(val);
+            assert!(a.is_inline());
+
+            a <<= 8u8;
+            assert_eq!(a.len(), 2);
+            assert_eq!(a.as_slice(), [0x37BE_EF00u32, 0xABCD_5513u32]);
+
+            let b = a << 24u8;
+            assert_eq!(b.len(), 3);
+            assert_eq!(
+                b.as_slice(),
+                [0x0000_0000u32, 0x1337_BEEFu32, 0x00AB_CD55u32]
+            );
+        }
+
+        #[test]
+        fn by_multiple_of_32() {
+            let val = 0xFFEE_00AA_AFFE_BEEFu64;
+            let mut a = SmolBitSet::from(val);
+            assert!(!a.is_inline());
+
+            a <<= 32u8;
+            assert_eq!(a.len(), 3);
+            assert_eq!(a.as_slice(), [0, 0xAFFE_BEEFu32, 0xFFEE_00AAu32]);
+
+            a <<= 64u8;
+            assert_eq!(a.len(), 5);
+            assert_eq!(a.as_slice(), [0, 0, 0, 0xAFFE_BEEFu32, 0xFFEE_00AAu32]);
+        }
+    }
+
+    mod shr {
+        use super::*;
+
+        #[test]
+        fn inline() {
+            let val = 0xF00D_BEEFu32;
+            let mut a = SmolBitSet::from(val);
+            assert!(a.is_inline());
+
+            a >>= 10u8;
+            assert!(a.is_inline());
+            assert_eq!(
+                unsafe { a.get_inline_data_unchecked() },
+                (val >> 10) as usize
+            );
+
+            let b = a >> 10u8;
+            assert!(b.is_inline());
+            assert_eq!(
+                unsafe { b.get_inline_data_unchecked() },
+                (val >> (10 + 10)) as usize
+            );
+        }
+
+        #[test]
+        fn slice() {
+            let val = 0xF420_1337_FEFE_BEEFu64;
+            let mut a = SmolBitSet::from(val);
+            assert!(!a.is_inline());
+            assert_eq!(a.len(), 2);
+
+            a >>= 8u8;
+            assert!(!a.is_inline());
+            assert_eq!(a.as_slice(), [0x37FE_FEBEu32, 0x00F4_2013u32]);
+
+            let b = a >> 24u8;
+            assert!(!b.is_inline());
+            assert_eq!(b.as_slice(), [0xF420_1337u32, 0x0000_0000u32]);
+        }
+
+        #[test]
+        fn by_multiple_of_32() {
+            let val = 0xFFEE_00AA_AFFE_BEEFu64;
+            let mut a = SmolBitSet::from(val);
+            assert!(!a.is_inline());
+
+            a >>= 32u8;
+            assert_eq!(a.len(), 2);
+            assert_eq!(a.as_slice(), [0xFFEE_00AAu32, 0]);
+
+            let mut a = SmolBitSet::from(val);
+            a >>= 64u8;
+            assert_eq!(a.len(), 2);
+            assert_eq!(a.as_slice(), [0, 0]);
+        }
+    }
+
+    #[test]
+    fn with_offsets() {
+        let val = 0xA5A5_BEEF_1337_A5A5u64;
+        let mut a = SmolBitSet::from(val);
+        assert!(!a.is_inline());
+        assert_eq!(a.len(), 2);
+
+        a <<= 64u16 + 24u16;
+        assert!(!a.is_inline());
+        assert_eq!(a.len(), 2 + 2 + 1);
+        assert_eq!(a.as_slice(), [0, 0, 0xA500_0000, 0xEF13_37A5, 0x00A5_A5BE]);
+
+        a >>= 32u32 + 16u32;
+        assert!(!a.is_inline());
+        assert_eq!(a.len(), 2 + 2 + 1); // still same size, does not auto shrink
+        assert_eq!(a.as_slice(), [0, 0x37A5_A500, 0xA5BE_EF13, 0x0000_00A5, 0],);
+    }
+}

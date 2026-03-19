@@ -61,3 +61,79 @@ impl cmp::Ord for SmolBitSet {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn eq() {
+        let mut a = SmolBitSet::from(u16::MAX);
+        let mut b = SmolBitSet::from(0xFFFFu16);
+        assert_eq!(a, b);
+
+        a <<= 55;
+        assert_ne!(a, b);
+
+        b <<= 55;
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn ord() {
+        let mut a = SmolBitSet::from(0xBEEFu16);
+        let mut b = SmolBitSet::from(0x00C5_F00Du32);
+        assert!(a < b);
+
+        a <<= 72;
+        assert!(a > b);
+        assert!(b < a);
+
+        b <<= 72;
+        assert!(a < b);
+    }
+
+    #[test]
+    fn eq_but_not_physical_same() {
+        let mut a = SmolBitSet::from(u16::MAX);
+        let mut b = SmolBitSet::from(0xFFFFu16);
+
+        // ensure a is larger than b in memory
+        a.spill(256);
+
+        assert_eq!(a, b);
+        assert_eq!(b, a);
+
+        a <<= 55;
+        assert_ne!(a, b);
+        assert_ne!(b, a);
+
+        b <<= 55;
+        assert_eq!(a, b);
+        assert_eq!(b, a);
+    }
+
+    #[test]
+    fn ord_but_not_physical_same() {
+        let mut a = SmolBitSet::from(0xBEEFu16);
+        let mut b = SmolBitSet::from(0x00C5_F00Du32);
+
+        // ensure a is larger than b in memory
+        a.spill(256);
+
+        assert!(a < b);
+        assert!(b > a);
+
+        a <<= 18;
+        assert!(a > b);
+        assert!(b < a);
+
+        a <<= 54;
+        assert!(a > b);
+        assert!(b < a);
+
+        b <<= 72;
+        assert!(a < b);
+        assert!(b > a);
+    }
+}
