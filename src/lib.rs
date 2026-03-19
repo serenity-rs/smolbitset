@@ -1091,7 +1091,7 @@ mod tests {
                 assert!(a.is_inline());
                 assert_eq!(b.len(), 2);
 
-                let res1 = a.clone().and_not(&b);
+                let res1 = a.and_not(&b);
                 assert_eq!(
                     to_bst_vec(&res1),
                     [
@@ -1121,7 +1121,7 @@ mod tests {
                             [
                                 ((0 as BitSliceType).$name($b as BitSliceType)),
                                 ((($a) as BitSliceType).$name(($b >> 32) as BitSliceType)),
-                                ((($a >> 32) as BitSliceType).$name((0 as BitSliceType)))
+                                ((($a >> 32) as BitSliceType).$name(0 as BitSliceType))
                             ]
                         );
                     }
@@ -1153,9 +1153,9 @@ mod tests {
                         assert_eq!(
                             zero_pad_to(to_bst_vec(&res), 3),
                             [
-                                (($a as BitSliceType).$name((0 as BitSliceType))),
+                                (($a as BitSliceType).$name(0 as BitSliceType)),
                                 ((($a >> 32) as BitSliceType).$name($b as BitSliceType)),
-                                ((0 as BitSliceType).$name((($b >> 32) as BitSliceType)))
+                                ((0 as BitSliceType).$name(($b >> 32) as BitSliceType))
                             ]
                         );
                     }
