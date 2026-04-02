@@ -81,6 +81,7 @@ type BitSliceType = u32;
 const HEADER_SIZE: u32 = 1;
 const BST_BITS: usize = BitSliceType::BITS as usize;
 const INLINE_SLICE_PARTS: usize = usize::BITS as usize / BST_BITS;
+const MAX_INLINE_BITS: usize = (usize::BITS - HEADER_SIZE) as usize;
 
 /// A dynamically sized bitset with memory usage optimizations.
 ///
