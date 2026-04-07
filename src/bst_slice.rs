@@ -9,6 +9,8 @@ pub enum BstSlice<'a> {
 
 impl<'a> BstSlice<'a> {
     pub fn new(sbs: &'a SmolBitSet) -> Self {
+        debug_assert!(!sbs.is_sparse());
+
         if sbs.is_inline() {
             let data = unsafe { sbs.get_inline_data_unchecked() };
             #[cfg(target_pointer_width = "32")]

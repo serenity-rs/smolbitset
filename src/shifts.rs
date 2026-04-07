@@ -7,6 +7,22 @@ fn sbs_shl(sbs: &mut SmolBitSet, rhs: usize) {
         return;
     }
 
+    if sbs.is_sparse() {
+        let flag = unsafe { sbs.get_inline_sparse_data_unchecked() };
+        let rhs = rhs
+            .try_into()
+            .expect("Cannot shift left by an amount larger than u32::MAX");
+        let new_flag = flag
+            .checked_add(rhs)
+            .expect("Cannot shift left by an amount that causes overflow");
+
+        unsafe {
+            sbs.write_inline_sparse_data_unchecked(new_flag);
+        }
+
+        return;
+    }
+
     let hb: usize = sbs.highest_set_bit();
     sbs.ensure_capacity(hb + rhs);
 
@@ -51,6 +67,24 @@ fn sbs_shl(sbs: &mut SmolBitSet, rhs: usize) {
 
 fn sbs_shr(sbs: &mut SmolBitSet, rhs: usize) {
     if rhs == 0 {
+        return;
+    }
+
+    if sbs.is_sparse() {
+        let flag = unsafe { sbs.get_inline_sparse_data_unchecked() };
+        let rhs = rhs.try_into().unwrap_or(u32::MAX);
+        let new_flag = flag.checked_sub(rhs);
+
+        match new_flag {
+            Some(f) => unsafe {
+                sbs.write_inline_sparse_data_unchecked(f);
+            },
+            None => {
+                // bitset is now empty, switching to non-sparse inline representation
+                *sbs = SmolBitSet::new();
+            }
+        }
+
         return;
     }
 
@@ -256,6 +290,27 @@ mod tests {
             assert_eq!(a.len(), 5);
             assert_eq!(a.as_slice(), [0, 0, 0, 0xAFFE_BEEFu32, 0xFFEE_00AAu32]);
         }
+
+        #[test]
+        fn sparse_inline() {
+            let flag = 0;
+            let mut a = SmolBitSet::new_flag(flag);
+            assert!(a.is_inline());
+            assert!(a.is_sparse());
+
+            a <<= 6u8;
+            assert!(a.is_inline());
+            assert!(a.is_sparse());
+            assert_eq!(unsafe { a.get_inline_sparse_data_unchecked() }, flag + 6);
+
+            let b = a << u16::MAX;
+            assert!(b.is_inline());
+            assert!(b.is_sparse());
+            assert_eq!(
+                unsafe { b.get_inline_sparse_data_unchecked() },
+                flag + 6 + u16::MAX as u32
+            );
+        }
     }
 
     mod shr {
@@ -312,6 +367,35 @@ mod tests {
             a >>= 64u8;
             assert_eq!(a.len(), 2);
             assert_eq!(a.as_slice(), [0, 0]);
+        }
+
+        #[test]
+        fn sparse_inline() {
+            let flag = u16::MAX as u32;
+            let mut a = SmolBitSet::new_flag(flag);
+            assert!(a.is_inline());
+            assert!(a.is_sparse());
+
+            a >>= 10u8;
+            assert!(a.is_inline());
+            assert!(a.is_sparse());
+            assert_eq!(
+                unsafe { a.get_inline_sparse_data_unchecked() },
+                flag.saturating_sub(10)
+            );
+
+            let b = a >> 420u16;
+            assert!(b.is_inline());
+            assert!(b.is_sparse());
+            assert_eq!(
+                unsafe { b.get_inline_sparse_data_unchecked() },
+                flag.saturating_sub(10 + 420)
+            );
+
+            let c = b >> u16::MAX;
+            assert!(c.is_inline());
+            assert!(!c.is_sparse());
+            assert_eq!(unsafe { c.get_inline_data_unchecked() }, 0);
         }
     }
 

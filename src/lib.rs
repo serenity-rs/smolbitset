@@ -1,6 +1,6 @@
 //! A library for dynamically sized bitsets with memory usage optimizations.
 //!
-//! The first <code>[usize::BITS] - 1</code> bits are stored without incurring any heap allocations.\
+//! The first <code>[usize::BITS] - 2</code> bits are stored without incurring any heap allocations.\
 //! Any larger values dynamically allocate an appropriately sized [`u32`] slice on the heap.\
 //! Furthermore [`SmolBitSet`] has a niche optimization so [`Option<SmolBitSet>`] has the same size of 1 [`usize`].
 //!
@@ -77,15 +77,32 @@ type BitSliceType = u32;
 
 /// How many bits are used for other purposes in the pointer which also determines
 /// the required alignment since we use the least significant bits for this header information.
-/// Bit 0: inline(1) / heap(0) flag
-const HEADER_SIZE: u32 = 1;
+///
+/// Bit 0 is used to determine whether the data is stored inline or on the heap (0 = heap, 1 = inline).\
+/// Bit 1 is used to determine the mode in which the bits are represented (0 = normal, 1 = sparse).\
+/// Sparse mode is an optimization for bitsets with very few bits set to 1.
+/// In this mode the set bits are stored as a list of indices instead.\
+/// This also allows us to create a [`SmolBitSet`] in const contexts for bit values that would not fit
+/// in the normal inline representation.
+const HEADER_SIZE: u32 = 2;
+
+enum Representation {
+    NormalInline = 0b01,
+    /// Sparse has no way to represent an empty set so it gets switched to normal inline instead
+    SparseInline = 0b11,
+    NormalHeap = 0b00,
+    // SparseHeap = 0b10, // TODO: evaluate & implement sparse heap representation
+}
+
 const BST_BITS: usize = BitSliceType::BITS as usize;
 const INLINE_SLICE_PARTS: usize = usize::BITS as usize / BST_BITS;
 const MAX_INLINE_BITS: usize = (usize::BITS - HEADER_SIZE) as usize;
+const MAX_INLINE_VAL: usize = usize::MAX >> HEADER_SIZE;
+const MAX_INLINE_SPARSE_VAL: BitSliceType = (BitSliceType::MAX >> HEADER_SIZE) as BitSliceType;
 
 /// A dynamically sized bitset with memory usage optimizations.
 ///
-/// The first <code>[usize::BITS] - 1</code> bits are stored without incurring any heap allocations.
+/// The first <code>[usize::BITS] - 2</code> bits are stored without incurring any heap allocations.
 #[repr(transparent)]
 pub struct SmolBitSet {
     ptr: NonNull<BitSliceType>,
@@ -112,7 +129,7 @@ impl SmolBitSet {
     ///
     /// # Panics
     ///
-    /// Panics if the most significant bit in `val` is 1.
+    /// Panics if any of the 2 most significant bits in `val` is 1.
     ///
     /// # Examples
     ///
@@ -124,8 +141,8 @@ impl SmolBitSet {
     #[must_use]
     pub const fn new_small(val: usize) -> Self {
         assert!(
-            val.leading_zeros() >= HEADER_SIZE,
-            "the highest bit in val must be 0 for a non allocating SmolBitSet"
+            val <= MAX_INLINE_VAL,
+            "val too large for a non allocating SmolBitSet"
         );
 
         let mut res = Self::new();
@@ -136,11 +153,39 @@ impl SmolBitSet {
         res
     }
 
+    /// Constructs a new sparse [`SmolBitSet`] from the provided `bit` index without any heap allocations.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `bit` is larger than <code>2^30</code>.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use smolbitset::SmolBitSet;
+    /// const sbs: SmolBitSet = SmolBitSet::new_flag(1234);
+    /// assert_eq!(sbs, SmolBitSet::new_flag(0) << 1234);
+    /// ```
+    #[must_use]
+    pub const fn new_flag(bit: BitSliceType) -> Self {
+        assert!(
+            bit <= MAX_INLINE_SPARSE_VAL,
+            "bit index out of range for a non allocating sparse SmolBitSet"
+        );
+
+        let mut res = Self::new();
+        unsafe {
+            res.write_inline_sparse_data_unchecked(bit);
+        }
+
+        res
+    }
+
     /// Constructs a new [`SmolBitSet`] from the provided array of bit indices without any heap allocations.
     ///
     /// # Panics
     ///
-    /// Panics if any bit index in `bits` is larger than or equal to [`usize::BITS`].
+    /// Panics if any bit index in `bits` is larger than or equal to <code>[usize::BITS] - 2</code>.
     ///
     /// # Examples
     ///
@@ -152,16 +197,16 @@ impl SmolBitSet {
     ///
     /// ```should_panic
     /// # use smolbitset::SmolBitSet;
-    /// // this panics since 63 is outside of the range
+    /// // this panics since 62 is outside of the range
     /// // a SmolBitSet can hold without incurring a heap allocation
-    /// let sbs = SmolBitSet::from_bits_small([63]);
+    /// let sbs = SmolBitSet::from_bits_small([62]);
     /// ```
     ///
     /// ```compile_fail
     /// # use smolbitset::SmolBitSet;
     /// // this fails to compile since the const evaluation
     /// // panics for the same reason as above
-    /// const sbs: SmolBitSet = SmolBitSet::from_bits_small([63]);
+    /// const sbs: SmolBitSet = SmolBitSet::from_bits_small([62]);
     /// ```
     #[must_use]
     pub const fn from_bits_small<const N: usize>(bits: [usize; N]) -> Self {
@@ -171,7 +216,7 @@ impl SmolBitSet {
         while i < N {
             let b = bits[i];
             assert!(
-                b < (usize::BITS - HEADER_SIZE) as usize,
+                b < MAX_INLINE_BITS,
                 "bit index out of range for a non allocating SmolBitSet"
             );
 
@@ -197,6 +242,8 @@ impl SmolBitSet {
     /// ```
     #[must_use]
     pub fn from_bits(bits: &[usize]) -> Self {
+        // TODO: check if sparse representation would be more efficient for the given bit indices
+
         let Some(hb) = bits.iter().copied().max() else {
             return Self::new();
         };
@@ -226,8 +273,19 @@ impl SmolBitSet {
     }
 
     #[inline]
+    // #[deprecated = "use `SmolBitSet::representation` instead"]
     fn is_inline(&self) -> bool {
         self.ptr.addr().get() & 0b1 == 1
+    }
+
+    #[inline]
+    fn representation(&self) -> Representation {
+        match self.ptr.addr().get() & 0b11 {
+            0b00 => Representation::NormalHeap,
+            0b01 => Representation::NormalInline,
+            0b11 => Representation::SparseInline,
+            _ => unreachable!(),
+        }
     }
 
     #[inline]
@@ -237,7 +295,35 @@ impl SmolBitSet {
 
     #[inline]
     const unsafe fn write_inline_data_unchecked(&mut self, data: usize) {
-        let addr = unsafe { NonZero::new_unchecked((data << HEADER_SIZE) | 0b1) };
+        debug_assert!(data <= MAX_INLINE_VAL);
+
+        let addr = unsafe { NonZero::new_unchecked((data << HEADER_SIZE) | 0b01) };
+        self.ptr = NonNull::without_provenance(addr);
+    }
+
+    #[inline]
+    // #[deprecated = "use `SmolBitSet::representation` instead"]
+    fn is_sparse(&self) -> bool {
+        self.ptr.addr().get() & 0b10 != 0
+    }
+
+    #[inline]
+    fn set_sparse(&mut self, sparse: bool) {
+        let addr = self.ptr.addr().get();
+        let new_addr = if sparse { addr | 0b10 } else { addr & !0b10 };
+        let addr = unsafe { NonZero::new_unchecked(new_addr) };
+        self.ptr = NonNull::without_provenance(addr);
+    }
+
+    unsafe fn get_inline_sparse_data_unchecked(&self) -> BitSliceType {
+        (self.ptr.addr().get() >> HEADER_SIZE) as BitSliceType
+    }
+
+    #[inline]
+    const unsafe fn write_inline_sparse_data_unchecked(&mut self, data: BitSliceType) {
+        debug_assert!(data <= MAX_INLINE_SPARSE_VAL);
+
+        let addr = unsafe { NonZero::new_unchecked(((data as usize) << HEADER_SIZE) | 0b11) };
         self.ptr = NonNull::without_provenance(addr);
     }
 
@@ -286,6 +372,20 @@ impl SmolBitSet {
     #[inline]
     const unsafe fn as_slice_mut_unchecked(&mut self) -> &mut [BitSliceType] {
         unsafe { slice::from_raw_parts_mut(self.data_ptr_unchecked(), self.len_unchecked()) }
+    }
+
+    fn as_normal(&self) -> Self {
+        if !self.is_sparse() {
+            return self.clone();
+        }
+
+        debug_assert!(
+            self.is_inline(),
+            "sparse heap representation is not implemented yet"
+        );
+
+        let flag = unsafe { self.get_inline_sparse_data_unchecked() };
+        Self::new_small(1) << flag
     }
 
     /// # Warning
@@ -338,7 +438,7 @@ impl SmolBitSet {
     #[inline]
     fn ensure_capacity(&mut self, highest_bit: usize) {
         if self.is_inline() {
-            if highest_bit > (usize::BITS - HEADER_SIZE) as usize {
+            if highest_bit > MAX_INLINE_BITS {
                 unsafe { self.do_spill(highest_bit) }
             }
 
@@ -389,24 +489,33 @@ impl SmolBitSet {
     /// The least significant bit is at index 1!
     #[inline]
     fn highest_set_bit(&self) -> usize {
-        if self.is_inline() {
-            let data = unsafe { self.get_inline_data_unchecked() };
-            return highest_set_bit!(usize, data);
-        }
+        match self.representation() {
+            Representation::NormalInline => {
+                let data = unsafe { self.get_inline_data_unchecked() };
+                highest_set_bit!(usize, data)
+            }
+            Representation::NormalHeap => {
+                let data = unsafe { self.as_slice_unchecked() };
+                for (idx, &data) in data.iter().enumerate().rev() {
+                    let h = highest_set_bit!(BitSliceType, data);
+                    if h != 0 {
+                        return (idx * BST_BITS) + h;
+                    }
+                }
 
-        let data = unsafe { self.as_slice_unchecked() };
-        for (idx, &data) in data.iter().enumerate().rev() {
-            let h = highest_set_bit!(BitSliceType, data);
-            if h != 0 {
-                return (idx * BST_BITS) + h;
+                0
+            }
+            Representation::SparseInline => {
+                let data = unsafe { self.get_inline_sparse_data_unchecked() };
+                data as usize + 1
             }
         }
-
-        0
     }
 
     /// Gets the starting bits that could be stored inlined.
     fn get_inlineable_start(&self) -> usize {
+        debug_assert!(!self.is_sparse());
+
         if self.is_inline() {
             let data = unsafe { self.get_inline_data_unchecked() };
             return data;
@@ -561,7 +670,7 @@ mod tests {
         t.ensure_capacity(32);
         assert!(t.is_inline());
 
-        let max_inline = (usize::BITS - HEADER_SIZE) as usize;
+        let max_inline = MAX_INLINE_BITS;
         t.ensure_capacity(max_inline);
         assert!(t.is_inline());
 

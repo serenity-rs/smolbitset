@@ -4,7 +4,7 @@
 
 A library for dynamically sized bitsets with optimizations for memory usage.
 
-The first <code>usize::BITS - 1</code> bits are stored without incurring any heap allocations.\
+The first <code>usize::BITS - 2</code> bits are stored without incurring any heap allocations.\
 Any larger values dynamically allocate an appropriately sized `u32` slice on the heap.\
 Furthermore `SmolBitSet` has a niche optimization so `Option<SmolBitSet>` has the same size of 1 [`usize`].
 
@@ -16,3 +16,7 @@ Furthermore `SmolBitSet` has a niche optimization so `Option<SmolBitSet>` has th
 [crates.io version]: https://img.shields.io/crates/v/smolbitset.svg?style=flat-square
 [rust-version-badge]: https://img.shields.io/badge/rust-1.89.0+-93450a.svg?style=flat-square
 [rust-version-link]: https://blog.rust-lang.org/2025/08/07/Rust-1.89.0/
+
+## TODO
+- [ ] improve readme / crate level docs
+- [ ] add info about sparse mode to readme / crate level docs
