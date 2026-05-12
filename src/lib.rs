@@ -1,8 +1,25 @@
-//! A library for dynamically sized bitsets with memory usage optimizations.
+//! A crate for dynamically sized bitsets with memory usage optimizations.\
+//! Supports 64 and 32 bit targets and has integrations with `serde` and `typesize`.\
+//! For `no_std` support disable the default `std` feature. The `no_std` environment must support [`alloc`].
 //!
-//! The first <code>[usize::BITS] - 2</code> bits are stored without incurring any heap allocations.\
-//! Any larger values dynamically allocate an appropriately sized [`u32`] slice on the heap.\
-//! Furthermore [`SmolBitSet`] has a niche optimization so [`Option<SmolBitSet>`] has the same size of 1 [`usize`].
+//! Bitsets are stored in 2 different modes: inline without any allocations or on the heap.\
+//! Additionally inline mode has 2 different encodings: normal and sparse.\
+//! Normal encoding stores a regular bitset in a [`usize`] (minus the needed bits for mode and encoding flags).\
+//! Sparse encoding stores a single bit index which allows for `const` construction of flag bitsets exceeding the inline bitset capacity.\
+//! Heap mode does not support sparse encoding (yet, support may be added in the future).
+//!
+//! | Pointer Size | [`size_of::<SmolBitSet>`] | Inline Capacity | Max Inline Sparse Bit |  Max Heap Capacity  |
+//! |-------------:|--------------------------:|----------------:|----------------------:|--------------------:|
+//! | 32 bits      | 4 bytes                   | 30 bits         | 1 073 741 824 (2^30)    | 2^37 bits (~17.1GB) |
+//! | 64 bits      | 8 bytes                   | 62 bits         | 4 294 967 296 (2^32)    | 2^37 bits (~17.1GB) |
+//!
+//! Furthermore [`SmolBitSet`] has a niche optimization so [`Option<SmolBitSet>`] has the same size as [`SmolBitSet`].
+//!
+//! ## Limitations
+//!
+//! [`SmolBitSet`] can not implement [`Copy`].\
+//! Implementing [`core::ops::Not`] is also not possible (or rather complex).\
+//! Related alternative methods are provided via [`SmolBitSet::and_not`] and [`SmolBitSet::and_not_assign`].
 //!
 //! # Example
 //!
@@ -101,8 +118,6 @@ const MAX_INLINE_VAL: usize = usize::MAX >> HEADER_SIZE;
 const MAX_INLINE_SPARSE_VAL: BitSliceType = (BitSliceType::MAX >> HEADER_SIZE) as BitSliceType;
 
 /// A dynamically sized bitset with memory usage optimizations.
-///
-/// The first <code>[usize::BITS] - 2</code> bits are stored without incurring any heap allocations.
 #[repr(transparent)]
 pub struct SmolBitSet {
     ptr: NonNull<BitSliceType>,
